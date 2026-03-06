@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Online Camera Upload</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="panel">
+        <h1>Cloud Camera</h1>
+        <p class="subtitle">Capture and upload directly to cloud storage.</p>
+
+        <form id="login-form" class="login-form">
+          <label for="passcode">Passcode</label>
+          <input id="passcode" type="password" autocomplete="current-password" required />
+          <button type="submit">Unlock Camera</button>
+        </form>
+
+        <div class="camera-wrap">
+          <video id="preview" playsinline autoplay muted></video>
+          <canvas id="capture-canvas" hidden></canvas>
+        </div>
+
+        <div class="controls">
+          <button id="capture" disabled>Take Photo</button>
+        </div>
+
+        <p id="status">Locked. Enter passcode to start.</p>
+
+        <section class="recent">
+          <h2>Recent Uploads</h2>
+          <ul id="recent-uploads"></ul>
+        </section>
+      </section>
+    </main>
+
+    <script type="module" src="/main.js"></script>
+  </body>
+</html>

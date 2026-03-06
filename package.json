@@ -1,0 +1,22 @@
+{
+  "name": "online-camera-app",
+  "version": "1.0.0",
+  "description": "Camera web app that uploads photos directly to S3-compatible object storage.",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "netlify:dev": "netlify dev"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.0.0",
+    "@aws-sdk/s3-request-presigner": "^3.0.0",
+    "dotenv": "^17.0.0",
+    "express": "^5.0.0",
+    "serverless-http": "^3.2.0"
+  }
+}
