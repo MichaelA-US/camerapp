@@ -16,22 +16,6 @@ const rootDir = path.resolve(__dirname, "..");
 const dataDir = path.join(rootDir, "data");
 const metadataPath = path.join(dataDir, "photos.ndjson");
 
-const requiredEnvVars = [
-  "APP_PASSCODE",
-  "TOKEN_SECRET",
-  "S3_BUCKET",
-  "S3_ACCESS_KEY_ID",
-  "S3_SECRET_ACCESS_KEY",
-  "S3_ENDPOINT",
-  "S3_REGION"
-];
-
-for (const key of requiredEnvVars) {
-  if (!process.env[key]) {
-    throw new Error(`Missing required environment variable: ${key}`);
-  }
-}
-
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
 const defaultMaxFileSizeMb = process.env.NETLIFY ? 4 : 10;
@@ -39,13 +23,10 @@ const maxFileSizeBytes = Number(process.env.MAX_FILE_SIZE_MB ?? defaultMaxFileSi
 const tokenTtlSeconds = Number(process.env.TOKEN_TTL_SECONDS ?? 86400 * 7);
 const signedUrlSeconds = Number(process.env.SIGNED_URL_TTL_SECONDS ?? 60);
 const publicBaseUrl = process.env.PUBLIC_ASSET_BASE_URL ?? "";
-const metadataBackend = String(process.env.METADATA_BACKEND ?? (process.env.NETLIFY ? "s3" : "file")).toLowerCase();
+const metadataBackendRaw = String(process.env.METADATA_BACKEND ?? (process.env.NETLIFY ? "s3" : "file")).toLowerCase();
+const metadataBackend = ["file", "s3"].includes(metadataBackendRaw) ? metadataBackendRaw : "file";
 const metadataPrefix = String(process.env.METADATA_PREFIX ?? "_meta").replace(/^\/+|\/+$/g, "");
 const rawUploadParser = express.raw({ type: () => true, limit: maxFileSizeBytes });
-
-if (!["file", "s3"].includes(metadataBackend)) {
-  throw new Error("Invalid METADATA_BACKEND. Use 'file' or 's3'.");
-}
 
 const s3 = new S3Client({
   region: process.env.S3_REGION,
@@ -59,6 +40,28 @@ const s3 = new S3Client({
 
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static(path.join(rootDir, "public")));
+
+function missingEnvVars(keys) {
+  return keys.filter((key) => !process.env[key]);
+}
+
+function requireEnvVars(res, keys) {
+  const missing = missingEnvVars(keys);
+  if (missing.length === 0) return true;
+
+  res.status(503).json({
+    error: `Server misconfigured. Missing environment variable(s): ${missing.join(", ")}`
+  });
+  return false;
+}
+
+const S3_REQUIRED_ENV = [
+  "S3_BUCKET",
+  "S3_ACCESS_KEY_ID",
+  "S3_SECRET_ACCESS_KEY",
+  "S3_ENDPOINT",
+  "S3_REGION"
+];
 
 function base64url(input) {
   return Buffer.from(input).toString("base64url");
@@ -103,6 +106,10 @@ function verifyToken(token) {
 }
 
 function auth(req, res, next) {
+  if (!requireEnvVars(res, ["TOKEN_SECRET"])) {
+    return;
+  }
+
   const authHeader = req.headers.authorization ?? "";
   const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
   const payload = verifyToken(token);
@@ -248,10 +255,21 @@ async function readMetadataForUser(userId) {
 }
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, metadataBackend, port });
+  res.json({
+    ok: true,
+    metadataBackend,
+    metadataBackendRequested: metadataBackendRaw,
+    port,
+    missingAuthConfig: missingEnvVars(["APP_PASSCODE", "TOKEN_SECRET"]),
+    missingS3Config: missingEnvVars(S3_REQUIRED_ENV)
+  });
 });
 
 app.post("/api/login", (req, res) => {
+  if (!requireEnvVars(res, ["APP_PASSCODE", "TOKEN_SECRET"])) {
+    return;
+  }
+
   const { passcode } = req.body ?? {};
   if (typeof passcode !== "string" || passcode.length === 0) {
     res.status(400).json({ error: "Passcode is required." });
@@ -274,6 +292,10 @@ app.post("/api/login", (req, res) => {
 
 app.post("/api/upload-url", auth, async (req, res, next) => {
   try {
+    if (!requireEnvVars(res, S3_REQUIRED_ENV)) {
+      return;
+    }
+
     const { contentType, fileSize } = req.body ?? {};
     const normalizedContentType = normalizeContentType(contentType);
 
@@ -325,6 +347,10 @@ app.post("/api/upload-url", auth, async (req, res, next) => {
 
 app.post("/api/upload", auth, rawUploadParser, async (req, res, next) => {
   try {
+    if (!requireEnvVars(res, S3_REQUIRED_ENV)) {
+      return;
+    }
+
     if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
       res.status(400).json({ error: "Image body is required." });
       return;
@@ -380,6 +406,10 @@ app.post("/api/upload", auth, rawUploadParser, async (req, res, next) => {
 
 app.post("/api/photos", auth, async (req, res, next) => {
   try {
+    if (metadataBackend === "s3" && !requireEnvVars(res, S3_REQUIRED_ENV)) {
+      return;
+    }
+
     const { key, contentType, sizeBytes, width, height, capturedAt, publicUrl } = req.body ?? {};
     if (typeof key !== "string" || key.length === 0) {
       res.status(400).json({ error: "key is required." });
@@ -406,6 +436,10 @@ app.post("/api/photos", auth, async (req, res, next) => {
 
 app.get("/api/photos", auth, async (req, res, next) => {
   try {
+    if (metadataBackend === "s3" && !requireEnvVars(res, S3_REQUIRED_ENV)) {
+      return;
+    }
+
     const photos = (await readMetadataForUser(req.user.id))
       .filter(Boolean)
       .sort((a, b) => {

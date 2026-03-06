@@ -125,6 +125,13 @@ npm run netlify:dev
 
 This runs static frontend + function routes together.
 
+### Troubleshooting Netlify 502/500
+
+- Open `/.netlify/functions/api/health` after deploy.
+- Check `missingAuthConfig` and `missingS3Config` arrays in the JSON response.
+- In Netlify UI, ensure variables are set for the **same context** (Production/Preview) you are testing.
+- Check Netlify Function logs for `/api/login` errors.
+
 ## 5) Deploy elsewhere
 
 You can also run this as a normal Node app:

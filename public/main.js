@@ -86,8 +86,19 @@ async function login(passcode) {
     body: JSON.stringify({ passcode })
   });
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: "Login failed." }));
-    throw new Error(body.error || "Login failed.");
+    let errorMessage = `Login failed (${res.status}).`;
+    try {
+      const body = await res.json();
+      if (body?.error) errorMessage = body.error;
+    } catch {
+      try {
+        const text = await res.text();
+        if (text) errorMessage = `${errorMessage} ${text}`;
+      } catch {
+        // ignore parse errors
+      }
+    }
+    throw new Error(errorMessage);
   }
   const payload = await res.json();
   authToken = payload.token;
