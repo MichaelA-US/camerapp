@@ -114,6 +114,7 @@ Why `MAX_FILE_SIZE_MB=4`: function relay uploads should stay under common server
 - Use a custom domain with HTTPS.
 - Keep preview deploys non-public if they contain production credentials.
 - Keep R2 bucket CORS restricted to your Netlify domain.
+- If Netlify secrets scanning flags non-secret values (`PORT`, `S3_REGION=auto`, `METADATA_BACKEND=s3`), keep `SECRETS_SCAN_OMIT_KEYS` in `netlify.toml` and continue scanning real secrets.
 
 ### Local Netlify test
 

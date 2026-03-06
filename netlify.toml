@@ -2,6 +2,11 @@
   command = "echo 'No build step'"
   publish = "public"
 
+[build.environment]
+  # These are non-secret config values that can appear in source/docs.
+  # Keep real credentials (APP_PASSCODE, TOKEN_SECRET, S3_* keys) scanned.
+  SECRETS_SCAN_OMIT_KEYS = "PORT,METADATA_BACKEND,METADATA_PREFIX,S3_REGION,S3_BUCKET"
+
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
