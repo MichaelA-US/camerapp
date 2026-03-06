@@ -1,18 +1,10 @@
 import serverless from "serverless-http";
+import app from "../../src/app.js";
 
-let cachedHandler = null;
-
-async function getHandler() {
-  if (cachedHandler) return cachedHandler;
-
-  const { default: app } = await import("../../src/app.js");
-  cachedHandler = serverless(app);
-  return cachedHandler;
-}
+const fn = serverless(app);
 
 export const handler = async (event, context) => {
   try {
-    const fn = await getHandler();
     return await fn(event, context);
   } catch (error) {
     console.error("Netlify function initialization/runtime error:", error);
