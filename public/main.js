@@ -6,6 +6,10 @@ const video = document.getElementById("preview");
 const canvas = document.getElementById("capture-canvas");
 const statusEl = document.getElementById("status");
 const albumGridEl = document.getElementById("album-grid");
+const previewModalEl = document.getElementById("preview-modal");
+const previewBackdropEl = document.getElementById("preview-backdrop");
+const previewCloseEl = document.getElementById("preview-close");
+const previewImageEl = document.getElementById("preview-image");
 
 const TOKEN_KEY = "onlineCameraToken";
 const MAX_ALBUM_ITEMS = 40;
@@ -63,11 +67,12 @@ function renderAlbum() {
     const item = albumEntries.get(key);
     if (!item?.displayUrl) return;
 
-    const card = document.createElement("a");
+    const card = document.createElement("button");
+    card.type = "button";
     card.className = "album-item";
-    card.href = item.publicUrl || item.displayUrl;
-    card.target = "_blank";
-    card.rel = "noopener noreferrer";
+    card.addEventListener("click", () => {
+      openPhotoPreview(item.displayUrl, item.key);
+    });
 
     const img = document.createElement("img");
     img.src = item.displayUrl;
@@ -90,6 +95,19 @@ function renderAlbum() {
     empty.textContent = "No preview available for older photos yet.";
     albumGridEl.appendChild(empty);
   }
+}
+
+function openPhotoPreview(url, key = "Photo preview") {
+  if (!url) return;
+  previewImageEl.src = url;
+  previewImageEl.alt = key;
+  previewModalEl.hidden = false;
+}
+
+function closePhotoPreview() {
+  if (previewModalEl.hidden) return;
+  previewModalEl.hidden = true;
+  previewImageEl.removeAttribute("src");
 }
 
 function trimAlbumEntries() {
@@ -182,6 +200,7 @@ async function loadRecentUploads() {
       authToken = "";
       stopCameraStream();
       setCameraControlsEnabled(false);
+      closePhotoPreview();
       setStatus("Session expired. Enter passcode again.", true);
     }
     return;
@@ -466,6 +485,11 @@ loginForm.addEventListener("submit", async (event) => {
 
 captureButton.addEventListener("click", captureAndUpload);
 flipButton.addEventListener("click", flipCamera);
+previewCloseEl.addEventListener("click", closePhotoPreview);
+previewBackdropEl.addEventListener("click", closePhotoPreview);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") closePhotoPreview();
+});
 
 setCameraControlsEnabled(false);
 renderAlbum();

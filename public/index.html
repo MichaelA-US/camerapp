@@ -38,6 +38,16 @@
           <div id="album-grid" class="album-grid"></div>
         </aside>
       </div>
+
+      <div id="preview-modal" class="preview-modal" hidden>
+        <div class="preview-backdrop" id="preview-backdrop"></div>
+        <div class="preview-content" role="dialog" aria-modal="true" aria-label="Photo preview">
+          <button id="preview-close" class="preview-close" type="button" aria-label="Close preview">
+            Close
+          </button>
+          <img id="preview-image" class="preview-image" alt="Photo preview" />
+        </div>
+      </div>
     </main>
 
     <script type="module" src="/main.js"></script>

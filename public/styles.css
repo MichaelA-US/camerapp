@@ -170,12 +170,15 @@ video {
 .album-item {
   position: relative;
   display: block;
+  width: 100%;
   border: 1px solid var(--line);
   border-radius: 10px;
   overflow: hidden;
   aspect-ratio: 1 / 1;
   background: #0d1413;
   color: inherit;
+  padding: 0;
+  cursor: zoom-in;
 }
 
 .album-item img {
@@ -205,6 +208,51 @@ video {
   margin: 0;
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.preview-modal[hidden] {
+  display: none;
+}
+
+.preview-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+}
+
+.preview-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(8, 16, 15, 0.8);
+}
+
+.preview-content {
+  position: relative;
+  width: min(92vw, 620px);
+  max-height: 90vh;
+  background: #0b1413;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 14px;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.preview-close {
+  justify-self: end;
+  border-radius: 8px;
+  padding: 7px 10px;
+  font-size: 0.88rem;
+}
+
+.preview-image {
+  width: 100%;
+  max-height: calc(90vh - 70px);
+  object-fit: contain;
+  border-radius: 10px;
+  background: #000;
 }
 
 @media (max-width: 900px) {
