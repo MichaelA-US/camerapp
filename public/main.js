@@ -193,6 +193,9 @@ function renderAlbum() {
     });
 
     const img = document.createElement("img");
+    img.addEventListener("error", () => {
+      removeAlbumEntry(item.key);
+    });
     img.src = item.displayUrl;
     img.alt = item.key || "Captured photo";
     card.appendChild(img);
@@ -228,13 +231,24 @@ function trimAlbumEntries() {
     const key = albumOrder.pop();
     if (!key) continue;
 
-    const entry = albumEntries.get(key);
-    if (entry?.isLocalPreview && typeof entry.displayUrl === "string" && entry.displayUrl.startsWith("blob:")) {
-      URL.revokeObjectURL(entry.displayUrl);
-    }
-
-    albumEntries.delete(key);
+    removeAlbumEntry(key, { render: false, syncFilters: false });
   }
+}
+
+function removeAlbumEntry(key, { render = true, syncFilters = true } = {}) {
+  if (!key || !albumEntries.has(key)) return;
+
+  const entry = albumEntries.get(key);
+  if (entry?.isLocalPreview && typeof entry.displayUrl === "string" && entry.displayUrl.startsWith("blob:")) {
+    URL.revokeObjectURL(entry.displayUrl);
+  }
+
+  albumEntries.delete(key);
+  const index = albumOrder.indexOf(key);
+  if (index !== -1) albumOrder.splice(index, 1);
+
+  if (syncFilters) syncAlbumFilterOptions();
+  if (render) renderAlbum();
 }
 
 function upsertAlbumEntry(nextEntry, { promote = true, render = true } = {}) {
@@ -795,6 +809,7 @@ publicOnlyFilterInput.addEventListener("change", updateAlbumFiltersFromUi);
 
 previewCloseEl.addEventListener("click", closePhotoPreview);
 previewBackdropEl.addEventListener("click", closePhotoPreview);
+previewImageEl.addEventListener("error", closePhotoPreview);
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closePhotoPreview();
 });
