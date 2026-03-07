@@ -20,8 +20,19 @@ const maxFileSizeBytes = Number(process.env.MAX_FILE_SIZE_MB ?? defaultMaxFileSi
 const tokenTtlSeconds = Number(process.env.TOKEN_TTL_SECONDS ?? 86400 * 7);
 const signedUrlSeconds = Number(process.env.SIGNED_URL_TTL_SECONDS ?? 60);
 const publicBaseUrl = process.env.PUBLIC_ASSET_BASE_URL ?? "";
-const metadataBackendRaw = String(process.env.METADATA_BACKEND ?? (process.env.NETLIFY ? "s3" : "file")).toLowerCase();
-const metadataBackend = ["file", "s3"].includes(metadataBackendRaw) ? metadataBackendRaw : "file";
+const isServerlessRuntime = Boolean(
+  process.env.NETLIFY ||
+    process.env.AWS_LAMBDA_FUNCTION_NAME ||
+    process.env.LAMBDA_TASK_ROOT ||
+    process.env.AWS_EXECUTION_ENV
+);
+const defaultMetadataBackend = isServerlessRuntime ? "s3" : "file";
+const metadataBackendRaw = String(process.env.METADATA_BACKEND ?? defaultMetadataBackend).toLowerCase();
+const parsedMetadataBackend = ["file", "s3"].includes(metadataBackendRaw)
+  ? metadataBackendRaw
+  : defaultMetadataBackend;
+const metadataBackend =
+  isServerlessRuntime && parsedMetadataBackend === "file" ? "s3" : parsedMetadataBackend;
 const metadataPrefix = String(process.env.METADATA_PREFIX ?? "_meta").replace(/^\/+|\/+$/g, "");
 const rawUploadParser = express.raw({ type: () => true, limit: maxFileSizeBytes });
 
@@ -274,12 +285,26 @@ async function appendMetadataToS3(entry) {
   );
 }
 
+function canUseS3Metadata() {
+  return missingEnvVars(S3_REQUIRED_ENV).length === 0;
+}
+
 async function appendPhotoMetadata(entry) {
   if (metadataBackend === "s3") {
     await appendMetadataToS3(entry);
-    return;
+    return { stored: true, backend: "s3" };
   }
-  await appendMetadataToFile(entry);
+
+  try {
+    await appendMetadataToFile(entry);
+    return { stored: true, backend: "file" };
+  } catch (error) {
+    if (["EROFS", "EACCES", "EPERM"].includes(error?.code) && canUseS3Metadata()) {
+      await appendMetadataToS3(entry);
+      return { stored: true, backend: "s3-fallback" };
+    }
+    throw error;
+  }
 }
 
 async function readMetadataForUser(userId) {
@@ -296,6 +321,8 @@ app.get("/api/health", (_req, res) => {
     ok: true,
     metadataBackend,
     metadataBackendRequested: metadataBackendRaw,
+    metadataBackendForcedToS3: isServerlessRuntime && parsedMetadataBackend === "file",
+    isServerlessRuntime,
     port,
     missingAuthConfig: missingEnvVars(["APP_PASSCODE", "TOKEN_SECRET"]),
     missingS3Config: missingEnvVars(S3_REQUIRED_ENV)
@@ -446,8 +473,21 @@ app.post("/api/upload", auth, rawUploadParser, async (req, res, next) => {
       publicUrl: buildPublicUrl(key)
     });
 
-    await appendPhotoMetadata(entry);
-    res.status(201).json(entry);
+    let metadataStored = true;
+    let metadataStoreBackend = metadataBackend;
+    try {
+      const metadataResult = await appendPhotoMetadata(entry);
+      metadataStoreBackend = metadataResult?.backend ?? metadataStoreBackend;
+    } catch (metadataError) {
+      metadataStored = false;
+      console.error("Metadata write failed after successful object upload:", metadataError);
+    }
+
+    res.status(201).json({
+      ...entry,
+      metadataStored,
+      metadataStoreBackend
+    });
   } catch (error) {
     next(error);
   }
@@ -476,8 +516,21 @@ app.post("/api/photos", auth, async (req, res, next) => {
       publicUrl
     });
 
-    await appendPhotoMetadata(entry);
-    res.status(201).json(entry);
+    let metadataStored = true;
+    let metadataStoreBackend = metadataBackend;
+    try {
+      const metadataResult = await appendPhotoMetadata(entry);
+      metadataStoreBackend = metadataResult?.backend ?? metadataStoreBackend;
+    } catch (metadataError) {
+      metadataStored = false;
+      console.error("Metadata write failed on /api/photos:", metadataError);
+    }
+
+    res.status(201).json({
+      ...entry,
+      metadataStored,
+      metadataStoreBackend
+    });
   } catch (error) {
     next(error);
   }

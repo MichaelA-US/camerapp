@@ -179,16 +179,6 @@ async function saveMetadata(payload) {
   }
 }
 
-function isLikelyCorsBlock(error) {
-  if (!error) return false;
-  const message = String(error.message || "");
-  return (
-    error instanceof TypeError ||
-    /load failed|failed to fetch|preflight|cors/i.test(message) ||
-    /upload failed \(403\)/i.test(message)
-  );
-}
-
 async function uploadViaSignedUrl(blob, width, height) {
   const contentType = normalizeImageContentType(blob.type);
   const uploadInfo = await getUploadUrl(contentType, blob.size);
@@ -242,14 +232,18 @@ async function captureAndUpload() {
     const { blob, width, height } = await captureBlob();
     setStatus("Preparing upload...");
     try {
-      await uploadViaSignedUrl(blob, width, height);
-      setStatus("Uploaded successfully.");
-    } catch (directError) {
-      if (!isLikelyCorsBlock(directError)) throw directError;
-      console.warn("Direct upload blocked; retrying through server relay.", directError);
-      setStatus("Direct upload blocked. Retrying through server...");
       await uploadViaServer(blob, width, height);
       setStatus("Uploaded successfully (server relay).");
+    } catch (relayError) {
+      const relayMessage = String(relayError?.message || "");
+      if (!/too large|413/i.test(relayMessage)) {
+        throw relayError;
+      }
+
+      // For large files, try direct signed upload as a fallback path.
+      setStatus("Server relay size limit reached. Trying direct upload...");
+      await uploadViaSignedUrl(blob, width, height);
+      setStatus("Uploaded successfully (direct upload).");
     }
 
     await loadRecentUploads();
