@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "users": [
+    {
+      "id": "user_bootstrap_d9c9df02a8ad0b0f396f",
+      "username": "m",
+      "passwordHash": "69c271ee898ce086405723962e4696cef9edff8cf95cf91e681ceaf53f7d7495a16d7cf537dc585e85a6569ee7a532d88cd7845f32a96199d42f65dcfbbadd42",
+      "passwordSalt": "a3ef9f76c96330d3834c1faf93810c42",
+      "role": "user",
+      "active": true,
+      "linkedUserIds": [],
+      "createdAt": "2026-03-07T02:08:45.499Z",
+      "updatedAt": "2026-03-07T02:08:45.499Z"
+    },
+    {
+      "id": "user_bootstrap_8a9134a078c440280ea8",
+      "username": "v",
+      "passwordHash": "e2a4512bb02a8571cf5895eca280dc886ac188de3773f586c89ee78b2dfcad2aa7e1931f7bacf0e0834814b3591802fc7b38a18f39d5ca9d8355712b8cf30c85",
+      "passwordSalt": "deb0264318ef0a339c0bc2c79ccdba59",
+      "role": "user",
+      "active": true,
+      "linkedUserIds": [],
+      "createdAt": "2026-03-07T02:08:45.531Z",
+      "updatedAt": "2026-03-07T02:08:45.531Z"
+    },
+    {
+      "id": "user_bootstrap_96ced2a19e0272eb441d",
+      "username": "admin",
+      "passwordHash": "220a2b6b45090aa367f8443359015409366e1a3c651f78f89a655cb412fb2dc12b4bad95b54d5db4a0b3e1903c7fba1cce498c08f167c324c78974a3ad14da58",
+      "passwordSalt": "982983186cd9b82a26c753123641136e",
+      "role": "admin",
+      "active": true,
+      "linkedUserIds": [],
+      "createdAt": "2026-03-07T02:08:45.558Z",
+      "updatedAt": "2026-03-07T02:08:45.558Z"
+    },
+    {
+      "id": "user_bootstrap_fd9e1644b533b15fe507",
+      "username": "boys",
+      "passwordHash": "e32fb314686b154f53c457158b9a8aa6b8fdbbdb8ebfb76183c89de1e58383448e46ed2080ef1af61e2a2c5c76331fe2025a4d3605e23bf6ee413831e37e39b0",
+      "passwordSalt": "db788bda3ae32fb2961e168c836ad5ab",
+      "role": "user",
+      "active": true,
+      "linkedUserIds": [],
+      "createdAt": "2026-03-07T02:08:45.584Z",
+      "updatedAt": "2026-03-07T02:08:45.584Z"
+    }
+  ]
+}

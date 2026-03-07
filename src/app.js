@@ -38,7 +38,7 @@ const metadataBackend =
 const metadataPrefix = String(process.env.METADATA_PREFIX ?? "_meta").replace(/^\/+|\/+$/g, "");
 const rawUploadParser = express.raw({ type: () => true, limit: maxFileSizeBytes });
 
-const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._@+\- ]{1,39}$/;
+const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._@+\- ]{0,39}$/;
 const ROLE_VALUES = new Set(["admin", "user"]);
 
 const s3 = new S3Client({
@@ -486,7 +486,7 @@ function createUserRecord({ username, password, role = "user", active = true }) 
   const normalizedUsername = normalizeUsername(username);
   if (!isValidUsername(normalizedUsername)) {
     throw new Error(
-      "Invalid username. Use 2-40 chars with letters, numbers, spaces, dot, underscore, dash, @, or +."
+      "Invalid username. Use 1-40 chars with letters, numbers, spaces, dot, underscore, dash, @, or +."
     );
   }
 
@@ -617,38 +617,87 @@ function countActiveAdmins(users, ignoreUserId = "", nextRole = "", nextActive =
   }).length;
 }
 
-function bootstrapAdminIdForUsername(username) {
-  const normalized = normalizeUsername(username) || "admin";
+function bootstrapUserIdForUsername(username) {
+  const normalized = normalizeUsername(username) || "user";
   const digest = crypto
     .createHash("sha256")
-    .update(`bootstrap-admin:${normalized}`)
+    .update(`bootstrap-user:${normalized}`)
     .digest("hex")
     .slice(0, 20);
   return `user_bootstrap_${digest}`;
 }
 
-function buildBootstrapAdminUser() {
-  const bootstrapPassword = process.env.ADMIN_PASSWORD ?? process.env.APP_PASSCODE ?? "";
-  if (!bootstrapPassword) return null;
+function configuredPasswordForBootstrapUsername(username) {
+  const normalized = normalizeUsername(username);
+  const envKeysByUsername = {
+    admin: ["ADMIN_PASSWORD", "APP_PASSCODE", "DEFAULT_USER_PASSWORD"],
+    m: ["USER_PASSWORD_M", "DEFAULT_USER_PASSWORD", "APP_PASSCODE", "ADMIN_PASSWORD"],
+    v: ["USER_PASSWORD_V", "DEFAULT_USER_PASSWORD", "APP_PASSCODE", "ADMIN_PASSWORD"],
+    boys: ["USER_PASSWORD_BOYS", "DEFAULT_USER_PASSWORD", "APP_PASSCODE", "ADMIN_PASSWORD"]
+  };
+  const envKeys = envKeysByUsername[normalized] ?? ["DEFAULT_USER_PASSWORD", "APP_PASSCODE", "ADMIN_PASSWORD"];
+  for (const key of envKeys) {
+    const value = process.env[key];
+    if (typeof value === "string" && value.length >= 4) {
+      return value;
+    }
+  }
+  return "";
+}
 
-  const configuredUsername = normalizeUsername(process.env.ADMIN_USERNAME ?? "admin");
-  const username = isValidUsername(configuredUsername) ? configuredUsername : "admin";
+function buildBootstrapUser(username, role) {
+  const normalizedUsername = normalizeUsername(username);
+  if (!isValidUsername(normalizedUsername)) return null;
+
+  const password = configuredPasswordForBootstrapUsername(normalizedUsername);
+  if (!password) return null;
 
   try {
     const user = createUserRecord({
-      username,
-      password: bootstrapPassword,
-      role: "admin",
+      username: normalizedUsername,
+      password,
+      role,
       active: true
     });
-    // Serverless runtimes can serve consecutive requests from different ephemeral instances.
-    // A stable bootstrap admin id keeps auth tokens valid even when store bootstrapping repeats.
-    user.id = bootstrapAdminIdForUsername(username);
+    user.id = bootstrapUserIdForUsername(normalizedUsername);
     return user;
   } catch (error) {
-    console.error("Could not bootstrap admin user from environment:", error);
+    console.error(`Could not bootstrap user ${normalizedUsername}:`, error);
     return null;
   }
+}
+
+function ensurePreconfiguredUsers(store) {
+  const normalizedStore = normalizeUserStore(store);
+  const byUsername = new Map(normalizedStore.users.map((user) => [user.username, user]));
+  const preconfigured = [
+    buildBootstrapUser("m", "user"),
+    buildBootstrapUser("v", "user"),
+    buildBootstrapUser("admin", "admin"),
+    buildBootstrapUser("boys", "user")
+  ].filter(Boolean);
+  let changed = false;
+
+  preconfigured.forEach((user) => {
+    if (!byUsername.has(user.username)) {
+      normalizedStore.users.push(user);
+      byUsername.set(user.username, user);
+      changed = true;
+    }
+  });
+
+  const adminUser = byUsername.get("admin");
+  if (adminUser && (adminUser.role !== "admin" || !adminUser.active)) {
+    adminUser.role = "admin";
+    adminUser.active = true;
+    adminUser.updatedAt = new Date().toISOString();
+    changed = true;
+  }
+
+  return {
+    changed,
+    store: normalizeUserStore(normalizedStore)
+  };
 }
 
 async function ensureDataDir() {
@@ -751,14 +800,11 @@ async function ensureUserStoreBootstrapped() {
 
   bootstrapPromise = (async () => {
     const store = await readUserStore();
-    if (store.users.length > 0) return store;
+    const preconfiguredResult = ensurePreconfiguredUsers(store);
+    if (!preconfiguredResult.changed) return preconfiguredResult.store;
 
-    const bootstrapAdmin = buildBootstrapAdminUser();
-    if (!bootstrapAdmin) return store;
-
-    const seededStore = normalizeUserStore({ version: 1, users: [bootstrapAdmin] });
-    await writeUserStore(seededStore);
-    return seededStore;
+    await writeUserStore(preconfiguredResult.store);
+    return preconfiguredResult.store;
   })();
 
   try {
@@ -877,7 +923,11 @@ async function auth(req, res, next) {
   try {
     await ensureUserStoreBootstrapped();
     const store = await readUserStore();
-    const user = store.users.find((candidate) => candidate.id === payload.sub);
+    let user = store.users.find((candidate) => candidate.id === payload.sub);
+    if (!user && typeof payload.un === "string" && payload.un.trim().length > 0) {
+      const tokenUsername = normalizeUsername(payload.un);
+      user = store.users.find((candidate) => candidate.username === tokenUsername);
+    }
 
     if (!user || !user.active) {
       res.status(401).json({ error: "Unauthorized" });
@@ -899,7 +949,7 @@ async function auth(req, res, next) {
 }
 
 function requireAdmin(req, res, next) {
-  if (req.user?.role !== "admin") {
+  if (req.user?.role !== "admin" || normalizeUsername(req.user?.username) !== "admin") {
     res.status(403).json({ error: "Admin access required." });
     return;
   }
@@ -1014,7 +1064,7 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res, next) => {
 
     if (!isValidUsername(username)) {
       res.status(400).json({
-        error: "Invalid username. Use 2-40 chars with letters, numbers, spaces, dot, underscore, dash, @, or +."
+        error: "Invalid username. Use 1-40 chars with letters, numbers, spaces, dot, underscore, dash, @, or +."
       });
       return;
     }

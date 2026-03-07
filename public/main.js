@@ -41,9 +41,9 @@ const FILTER_ALBUM_KEY = "onlineCameraFilterAlbum";
 const FILTER_PUBLIC_KEY = "onlineCameraFilterPublic";
 const FILTER_OWNER_KEY = "onlineCameraFilterOwner";
 const MAX_ALBUM_ITEMS = 80;
-const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._@+\- ]{1,39}$/;
+const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._@+\- ]{0,39}$/;
 const USERNAME_RULES_ERROR =
-  "Username must be 2-40 chars and may include letters, numbers, spaces, dot, underscore, dash, @, or +.";
+  "Username must be 1-40 chars and may include letters, numbers, spaces, dot, underscore, dash, @, or +.";
 
 let authToken = localStorage.getItem(TOKEN_KEY) || "";
 let authUser = null;
@@ -138,7 +138,7 @@ function formatAlbumTime(timestamp) {
 }
 
 function isAdmin() {
-  return authUser?.role === "admin";
+  return authUser?.role === "admin" && normalizeUsername(authUser?.username) === "admin";
 }
 
 function setSessionUi() {
