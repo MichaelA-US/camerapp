@@ -171,6 +171,14 @@ function buildPhotoEntry({ userId, key, contentType, sizeBytes, width, height, c
 }
 
 function extractPasscode(req) {
+  const headerPasscode = req.headers["x-passcode"];
+  if (typeof headerPasscode === "string" && headerPasscode.length > 0) {
+    return headerPasscode;
+  }
+  if (Array.isArray(headerPasscode) && typeof headerPasscode[0] === "string" && headerPasscode[0].length > 0) {
+    return headerPasscode[0];
+  }
+
   if (typeof req.body?.passcode === "string") {
     return req.body.passcode;
   }

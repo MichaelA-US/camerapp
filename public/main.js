@@ -82,7 +82,10 @@ async function startCamera() {
 async function login(passcode) {
   const res = await fetch("/api/login", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "X-Passcode": passcode
+    },
     body: JSON.stringify({ passcode })
   });
   if (!res.ok) {
