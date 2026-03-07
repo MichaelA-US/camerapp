@@ -36,6 +36,7 @@ const s3 = new S3Client({
 });
 
 app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 app.use(express.static(path.join(rootDir, "public")));
 
 function missingEnvVars(keys) {
@@ -169,6 +170,28 @@ function buildPhotoEntry({ userId, key, contentType, sizeBytes, width, height, c
   };
 }
 
+function extractPasscode(req) {
+  if (typeof req.body?.passcode === "string") {
+    return req.body.passcode;
+  }
+
+  if (typeof req.body === "string") {
+    const textBody = req.body;
+    if (!textBody) return "";
+
+    try {
+      const parsed = JSON.parse(textBody);
+      if (typeof parsed?.passcode === "string") return parsed.passcode;
+    } catch {
+      // If not JSON, treat the raw text body as the passcode.
+    }
+
+    return textBody;
+  }
+
+  return "";
+}
+
 async function ensureDataDir() {
   await fs.mkdir(dataDir, { recursive: true });
 }
@@ -267,7 +290,7 @@ app.post("/api/login", (req, res) => {
     return;
   }
 
-  const { passcode } = req.body ?? {};
+  const passcode = extractPasscode(req);
   if (typeof passcode !== "string" || passcode.length === 0) {
     res.status(400).json({ error: "Passcode is required." });
     return;
