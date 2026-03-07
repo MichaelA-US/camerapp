@@ -70,14 +70,18 @@ label {
 }
 
 input,
+select,
 button {
   font: inherit;
 }
 
-input {
+input,
+select {
   border: 1px solid var(--line);
   border-radius: 12px;
   padding: 12px;
+  background: #fff;
+  color: var(--ink);
 }
 
 button {
@@ -118,8 +122,28 @@ video {
 }
 
 #capture,
-#flip-camera {
+#flip-camera,
+#upload-files {
   flex: 1;
+}
+
+.upload-options {
+  margin-top: 2px;
+  display: grid;
+  gap: 8px;
+}
+
+.check-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+}
+
+.check-row input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  margin: 0;
 }
 
 #status {
@@ -154,6 +178,16 @@ video {
   margin: 6px 0 10px;
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.album-filters {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.album-filters label {
+  font-size: 0.84rem;
 }
 
 .album-grid {

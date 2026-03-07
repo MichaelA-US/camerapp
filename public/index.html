@@ -21,6 +21,15 @@
             <button type="submit">Unlock Camera</button>
           </form>
 
+          <div class="upload-options">
+            <label for="album-name">Album</label>
+            <input id="album-name" type="text" maxlength="50" value="general" />
+            <label class="check-row" for="public-toggle">
+              <input id="public-toggle" type="checkbox" />
+              <span>Make uploads public</span>
+            </label>
+          </div>
+
           <div class="camera-wrap">
             <video id="preview" playsinline autoplay muted></video>
             <canvas id="capture-canvas" hidden></canvas>
@@ -30,13 +39,27 @@
             <button id="capture" disabled>Take Photo</button>
             <button id="flip-camera" disabled>Flip Camera</button>
           </div>
+          <div class="controls">
+            <button id="upload-files" disabled>Upload From Device</button>
+            <input id="file-picker" type="file" accept="image/*" multiple hidden />
+          </div>
 
           <p id="status">Locked. Enter passcode to start.</p>
         </section>
 
         <aside class="album-panel">
           <h2 class="album-title">Album</h2>
-          <p class="album-subtitle">Latest photos from this session.</p>
+          <p class="album-subtitle">Browse uploaded photos by album.</p>
+          <div class="album-filters">
+            <label for="album-filter">View Album</label>
+            <select id="album-filter">
+              <option value="">All albums</option>
+            </select>
+            <label class="check-row" for="public-only-filter">
+              <input id="public-only-filter" type="checkbox" />
+              <span>Public only</span>
+            </label>
+          </div>
           <div id="album-grid" class="album-grid"></div>
         </aside>
       </div>

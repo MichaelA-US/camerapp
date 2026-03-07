@@ -163,6 +163,12 @@ function normalizeName(value) {
   return value.trim().replace(/\s+/g, " ").slice(0, 60);
 }
 
+function normalizeAlbum(value) {
+  if (typeof value !== "string") return "general";
+  const normalized = value.trim().replace(/\s+/g, " ").slice(0, 50);
+  return normalized || "general";
+}
+
 function slugFromName(value) {
   const slug = normalizeName(value)
     .toLowerCase()
@@ -170,6 +176,26 @@ function slugFromName(value) {
     .replace(/^-+|-+$/g, "")
     .slice(0, 24);
   return slug || "photo";
+}
+
+function slugFromAlbum(value) {
+  const slug = normalizeAlbum(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 28);
+  return slug || "general";
+}
+
+function parseBooleanFlag(value, defaultValue = false) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "n", "off", ""].includes(normalized)) return false;
+  }
+  return defaultValue;
 }
 
 function extensionFromType(contentType) {
@@ -184,11 +210,12 @@ function extensionFromType(contentType) {
   return map[contentType] ?? null;
 }
 
-function buildObjectKey(userId, extension, uploaderName = "") {
+function buildObjectKey(userId, extension, uploaderName = "", album = "general") {
   const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   const shortId = `${Date.now().toString(36)}${crypto.randomBytes(2).toString("hex")}`;
   const nameSlug = slugFromName(uploaderName);
-  return `${userId}/${day}/${nameSlug}-${shortId}.${extension}`;
+  const albumSlug = slugFromAlbum(album);
+  return `${userId}/${day}/${albumSlug}/${nameSlug}-${shortId}.${extension}`;
 }
 
 function buildPublicUrl(key) {
@@ -199,7 +226,21 @@ function metadataIndexKey(userId) {
   return `${metadataPrefix}/${userId}/index.json`;
 }
 
-function buildPhotoEntry({ userId, key, contentType, sizeBytes, width, height, capturedAt, publicUrl }) {
+function buildPhotoEntry({
+  userId,
+  key,
+  contentType,
+  sizeBytes,
+  width,
+  height,
+  capturedAt,
+  publicUrl,
+  album,
+  isPublic,
+  uploaderName
+}) {
+  const normalizedAlbum = normalizeAlbum(album);
+  const isPublicPhoto = parseBooleanFlag(isPublic, false);
   return {
     id: randomId(),
     userId,
@@ -209,8 +250,21 @@ function buildPhotoEntry({ userId, key, contentType, sizeBytes, width, height, c
     width: typeof width === "number" ? width : null,
     height: typeof height === "number" ? height : null,
     capturedAt: typeof capturedAt === "string" ? capturedAt : new Date().toISOString(),
-    publicUrl: typeof publicUrl === "string" ? publicUrl : null,
+    publicUrl: isPublicPhoto && typeof publicUrl === "string" ? publicUrl : null,
+    album: normalizedAlbum,
+    isPublic: isPublicPhoto,
+    uploaderName: normalizeName(uploaderName),
     createdAt: new Date().toISOString()
+  };
+}
+
+function normalizeStoredPhotoEntry(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  return {
+    ...entry,
+    album: normalizeAlbum(entry.album),
+    isPublic: parseBooleanFlag(entry.isPublic, false),
+    uploaderName: normalizeName(entry.uploaderName)
   };
 }
 
@@ -256,6 +310,34 @@ function extractUploaderName(req) {
     return normalizeName(req.body.name);
   }
   return "";
+}
+
+function extractAlbum(req) {
+  const headerAlbum = req.headers["x-album"];
+  if (typeof headerAlbum === "string" && headerAlbum.length > 0) {
+    return normalizeAlbum(headerAlbum);
+  }
+  if (Array.isArray(headerAlbum) && typeof headerAlbum[0] === "string" && headerAlbum[0].length > 0) {
+    return normalizeAlbum(headerAlbum[0]);
+  }
+  if (typeof req.body?.album === "string") {
+    return normalizeAlbum(req.body.album);
+  }
+  return "general";
+}
+
+function extractIsPublic(req, defaultValue = false) {
+  const headerIsPublic = req.headers["x-is-public"];
+  if (typeof headerIsPublic === "string") {
+    return parseBooleanFlag(headerIsPublic, defaultValue);
+  }
+  if (Array.isArray(headerIsPublic) && typeof headerIsPublic[0] === "string") {
+    return parseBooleanFlag(headerIsPublic[0], defaultValue);
+  }
+  if (req.body && Object.hasOwn(req.body, "isPublic")) {
+    return parseBooleanFlag(req.body.isPublic, defaultValue);
+  }
+  return defaultValue;
 }
 
 async function ensureDataDir() {
@@ -445,7 +527,9 @@ app.post("/api/upload-url", auth, async (req, res, next) => {
       return;
     }
 
-    const key = buildObjectKey(req.user.id, extension, req.user.name);
+    const album = extractAlbum(req);
+    const isPublicPhoto = extractIsPublic(req, false);
+    const key = buildObjectKey(req.user.id, extension, req.user.name, album);
     const command = new PutObjectCommand({
       Bucket: process.env.S3_BUCKET,
       Key: key,
@@ -453,13 +537,15 @@ app.post("/api/upload-url", auth, async (req, res, next) => {
     });
 
     const uploadUrl = await getSignedUrl(s3, command, { expiresIn: signedUrlSeconds });
-    const publicUrl = buildPublicUrl(key);
+    const publicUrl = isPublicPhoto ? buildPublicUrl(key) : null;
 
     res.json({
       key,
       uploadUrl,
       expiresInSeconds: signedUrlSeconds,
-      publicUrl
+      publicUrl,
+      album,
+      isPublic: isPublicPhoto
     });
   } catch (error) {
     next(error);
@@ -493,7 +579,9 @@ app.post("/api/upload", auth, rawUploadParser, async (req, res, next) => {
       return;
     }
 
-    const key = buildObjectKey(req.user.id, extension, req.user.name);
+    const album = extractAlbum(req);
+    const isPublicPhoto = extractIsPublic(req, false);
+    const key = buildObjectKey(req.user.id, extension, req.user.name, album);
     await s3.send(
       new PutObjectCommand({
         Bucket: process.env.S3_BUCKET,
@@ -503,8 +591,8 @@ app.post("/api/upload", auth, rawUploadParser, async (req, res, next) => {
       })
     );
 
-    const widthHeader = Number(req.headers["x-image-width"]);
-    const heightHeader = Number(req.headers["x-image-height"]);
+    const widthHeader = coercePositiveNumber(req.headers["x-image-width"]);
+    const heightHeader = coercePositiveNumber(req.headers["x-image-height"]);
     const capturedAtHeader = req.headers["x-captured-at"];
 
     const entry = buildPhotoEntry({
@@ -512,10 +600,13 @@ app.post("/api/upload", auth, rawUploadParser, async (req, res, next) => {
       key,
       contentType,
       sizeBytes: req.body.length,
-      width: Number.isFinite(widthHeader) ? widthHeader : null,
-      height: Number.isFinite(heightHeader) ? heightHeader : null,
+      width: widthHeader ? Math.round(widthHeader) : null,
+      height: heightHeader ? Math.round(heightHeader) : null,
       capturedAt: typeof capturedAtHeader === "string" ? capturedAtHeader : new Date().toISOString(),
-      publicUrl: buildPublicUrl(key)
+      publicUrl: buildPublicUrl(key),
+      album,
+      isPublic: isPublicPhoto,
+      uploaderName: req.user.name
     });
 
     let metadataStored = true;
@@ -545,6 +636,8 @@ app.post("/api/photos", auth, async (req, res, next) => {
     }
 
     const { key, contentType, sizeBytes, width, height, capturedAt, publicUrl } = req.body ?? {};
+    const album = extractAlbum(req);
+    const isPublicPhoto = extractIsPublic(req, false);
     if (typeof key !== "string" || key.length === 0) {
       res.status(400).json({ error: "key is required." });
       return;
@@ -558,7 +651,10 @@ app.post("/api/photos", auth, async (req, res, next) => {
       width,
       height,
       capturedAt,
-      publicUrl
+      publicUrl: typeof publicUrl === "string" && publicUrl.length > 0 ? publicUrl : buildPublicUrl(key),
+      album,
+      isPublic: isPublicPhoto,
+      uploaderName: req.user.name
     });
 
     let metadataStored = true;
@@ -587,16 +683,44 @@ app.get("/api/photos", auth, async (req, res, next) => {
       return;
     }
 
-    const photos = (await readMetadataForUser(req.user.id))
+    const albumQuery = typeof req.query?.album === "string" ? req.query.album : "";
+    const normalizedAlbumFilter = albumQuery.trim().length > 0 ? normalizeAlbum(albumQuery) : "";
+    const publicOnly = parseBooleanFlag(req.query?.publicOnly, false);
+    const limitRequested = Number(req.query?.limit);
+    const limit =
+      Number.isFinite(limitRequested) && limitRequested > 0
+        ? Math.min(Math.floor(limitRequested), 250)
+        : 100;
+
+    const allPhotos = (await readMetadataForUser(req.user.id))
+      .map(normalizeStoredPhotoEntry)
       .filter(Boolean)
       .sort((a, b) => {
         const aTime = Date.parse(a?.createdAt ?? "") || 0;
         const bTime = Date.parse(b?.createdAt ?? "") || 0;
         return bTime - aTime;
-      })
-      .slice(0, 100);
+      });
 
-    res.json({ photos });
+    const albums = Array.from(new Set(allPhotos.map((item) => item.album).filter(Boolean))).sort((a, b) =>
+      a.localeCompare(b)
+    );
+
+    const photos = allPhotos
+      .filter((item) => {
+        if (normalizedAlbumFilter && item.album !== normalizedAlbumFilter) return false;
+        if (publicOnly && !item.isPublic) return false;
+        return true;
+      })
+      .slice(0, limit);
+
+    res.json({
+      photos,
+      albums,
+      filters: {
+        album: normalizedAlbumFilter || null,
+        publicOnly
+      }
+    });
   } catch (error) {
     next(error);
   }
