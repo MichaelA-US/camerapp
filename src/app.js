@@ -80,9 +80,10 @@ function hmac(input) {
   return crypto.createHmac("sha256", process.env.TOKEN_SECRET).update(input).digest("base64url");
 }
 
-function createToken(userId) {
+function createToken(userId, uploaderName = "") {
   const payload = {
     sub: userId,
+    nm: typeof uploaderName === "string" ? uploaderName : "",
     exp: Math.floor(Date.now() / 1000) + tokenTtlSeconds
   };
   const encodedPayload = base64url(JSON.stringify(payload));
@@ -110,6 +111,7 @@ function verifyToken(token) {
   }
 
   if (typeof payload.exp !== "number" || typeof payload.sub !== "string") return null;
+  if (payload.nm !== undefined && typeof payload.nm !== "string") return null;
   if (payload.exp < Math.floor(Date.now() / 1000)) return null;
   return payload;
 }
@@ -128,7 +130,13 @@ function auth(req, res, next) {
     return;
   }
 
-  req.user = { id: payload.sub };
+  const normalizedSessionName = normalizeName(payload.nm || "");
+  if (!normalizedSessionName) {
+    res.status(401).json({ error: "Session missing name. Please log in again." });
+    return;
+  }
+
+  req.user = { id: payload.sub, name: normalizedSessionName };
   next();
 }
 
@@ -150,6 +158,20 @@ function coercePositiveNumber(value) {
   return null;
 }
 
+function normalizeName(value) {
+  if (typeof value !== "string") return "";
+  return value.trim().replace(/\s+/g, " ").slice(0, 60);
+}
+
+function slugFromName(value) {
+  const slug = normalizeName(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24);
+  return slug || "photo";
+}
+
 function extensionFromType(contentType) {
   const map = {
     "image/jpeg": "jpg",
@@ -162,10 +184,11 @@ function extensionFromType(contentType) {
   return map[contentType] ?? null;
 }
 
-function buildObjectKey(userId, extension) {
+function buildObjectKey(userId, extension, uploaderName = "") {
   const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   const shortId = `${Date.now().toString(36)}${crypto.randomBytes(2).toString("hex")}`;
-  return `${userId}/${day}/${shortId}.${extension}`;
+  const nameSlug = slugFromName(uploaderName);
+  return `${userId}/${day}/${nameSlug}-${shortId}.${extension}`;
 }
 
 function buildPublicUrl(key) {
@@ -218,6 +241,20 @@ function extractPasscode(req) {
     return textBody;
   }
 
+  return "";
+}
+
+function extractUploaderName(req) {
+  const headerName = req.headers["x-uploader-name"];
+  if (typeof headerName === "string" && headerName.length > 0) {
+    return normalizeName(headerName);
+  }
+  if (Array.isArray(headerName) && typeof headerName[0] === "string" && headerName[0].length > 0) {
+    return normalizeName(headerName[0]);
+  }
+  if (typeof req.body?.name === "string") {
+    return normalizeName(req.body.name);
+  }
   return "";
 }
 
@@ -335,6 +372,12 @@ app.post("/api/login", (req, res) => {
     return;
   }
 
+  const uploaderName = extractUploaderName(req);
+  if (!uploaderName) {
+    res.status(400).json({ error: "Name is required." });
+    return;
+  }
+
   const passcode = extractPasscode(req);
   if (typeof passcode !== "string" || passcode.length === 0) {
     res.status(400).json({ error: "Passcode is required." });
@@ -348,15 +391,16 @@ app.post("/api/login", (req, res) => {
     return;
   }
 
-  const token = createToken("owner");
+  const token = createToken("owner", uploaderName);
   res.json({
     token,
-    expiresInSeconds: tokenTtlSeconds
+    expiresInSeconds: tokenTtlSeconds,
+    name: uploaderName
   });
 });
 
 app.get("/api/login", (_req, res) => {
-  res.status(405).json({ error: "Use POST /api/login with a passcode body." });
+  res.status(405).json({ error: "Use POST /api/login with name and passcode in the request body." });
 });
 
 app.post("/api/upload-url", auth, async (req, res, next) => {
@@ -401,7 +445,7 @@ app.post("/api/upload-url", auth, async (req, res, next) => {
       return;
     }
 
-    const key = buildObjectKey(req.user.id, extension);
+    const key = buildObjectKey(req.user.id, extension, req.user.name);
     const command = new PutObjectCommand({
       Bucket: process.env.S3_BUCKET,
       Key: key,
@@ -449,7 +493,7 @@ app.post("/api/upload", auth, rawUploadParser, async (req, res, next) => {
       return;
     }
 
-    const key = buildObjectKey(req.user.id, extension);
+    const key = buildObjectKey(req.user.id, extension, req.user.name);
     await s3.send(
       new PutObjectCommand({
         Bucket: process.env.S3_BUCKET,

@@ -1,4 +1,5 @@
 const loginForm = document.getElementById("login-form");
+const nameInput = document.getElementById("photographer-name");
 const passcodeInput = document.getElementById("passcode");
 const captureButton = document.getElementById("capture");
 const flipButton = document.getElementById("flip-camera");
@@ -12,8 +13,10 @@ const previewCloseEl = document.getElementById("preview-close");
 const previewImageEl = document.getElementById("preview-image");
 
 const TOKEN_KEY = "onlineCameraToken";
+const NAME_KEY = "onlineCameraName";
 const MAX_ALBUM_ITEMS = 40;
 let authToken = localStorage.getItem(TOKEN_KEY) || "";
+let photographerName = localStorage.getItem(NAME_KEY) || "";
 let stream = null;
 let currentFacingMode = "environment";
 let hasMultipleCameras = true;
@@ -30,6 +33,11 @@ function authHeaders() {
     "Content-Type": "application/json",
     Authorization: `Bearer ${authToken}`
   };
+}
+
+function normalizeName(value) {
+  if (typeof value !== "string") return "";
+  return value.trim().replace(/\s+/g, " ").slice(0, 60);
 }
 
 function normalizeImageContentType(value) {
@@ -283,13 +291,19 @@ async function flipCamera() {
 }
 
 async function login(passcode) {
+  const normalizedName = normalizeName(nameInput.value);
+  if (!normalizedName) {
+    throw new Error("Name is required.");
+  }
+
   const res = await fetch("/api/login", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Passcode": passcode
+      "X-Passcode": passcode,
+      "X-Uploader-Name": normalizedName
     },
-    body: JSON.stringify({ passcode })
+    body: JSON.stringify({ passcode, name: normalizedName })
   });
   if (!res.ok) {
     let errorMessage = `Login failed (${res.status}).`;
@@ -309,6 +323,9 @@ async function login(passcode) {
   const payload = await res.json();
   authToken = payload.token;
   localStorage.setItem(TOKEN_KEY, authToken);
+  photographerName = normalizeName(payload.name || normalizedName);
+  localStorage.setItem(NAME_KEY, photographerName);
+  nameInput.value = photographerName;
 }
 
 function captureBlob() {
@@ -493,6 +510,7 @@ document.addEventListener("keydown", (event) => {
 
 setCameraControlsEnabled(false);
 renderAlbum();
+nameInput.value = photographerName;
 
 if (authToken) {
   setStatus("Restoring session...");
