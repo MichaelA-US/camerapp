@@ -99,6 +99,28 @@ button[disabled] {
   cursor: not-allowed;
 }
 
+.session-row {
+  margin: 4px 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+#session-user {
+  font-size: 0.88rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#logout-button {
+  background: #23564d;
+  padding: 8px 10px;
+  font-size: 0.82rem;
+}
+
 .camera-wrap {
   margin-top: 12px;
   border-radius: 16px;
@@ -144,6 +166,85 @@ video {
   width: 18px;
   height: 18px;
   margin: 0;
+}
+
+.admin-panel {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.admin-title {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.admin-subtitle {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.create-user-form {
+  display: grid;
+  gap: 8px;
+}
+
+.admin-status {
+  margin: 0;
+  min-height: 1.1em;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+.admin-status.error {
+  color: var(--danger);
+}
+
+.admin-users-list {
+  display: grid;
+  gap: 10px;
+}
+
+.admin-user-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  display: grid;
+  gap: 7px;
+  background: #f9fbfb;
+}
+
+.admin-user-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.admin-user-meta {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.admin-user-row {
+  display: grid;
+  gap: 6px;
+}
+
+.admin-user-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.admin-user-actions button {
+  flex: 1;
+  padding: 9px 10px;
+  font-size: 0.83rem;
 }
 
 #status {

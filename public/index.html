@@ -14,12 +14,17 @@
           <p class="subtitle">Capture and upload directly to cloud storage.</p>
 
           <form id="login-form" class="login-form">
-            <label for="photographer-name">Name</label>
-            <input id="photographer-name" type="text" autocomplete="name" required maxlength="60" />
-            <label for="passcode">Passcode</label>
-            <input id="passcode" type="password" autocomplete="current-password" required />
-            <button type="submit">Unlock Camera</button>
+            <label for="username">Username</label>
+            <input id="username" type="text" autocomplete="username" required maxlength="40" />
+            <label for="password">Password</label>
+            <input id="password" type="password" autocomplete="current-password" required />
+            <button type="submit">Sign In</button>
           </form>
+
+          <div class="session-row">
+            <span id="session-user">Not signed in</span>
+            <button id="logout-button" type="button" disabled>Log Out</button>
+          </div>
 
           <div class="upload-options">
             <label for="album-name">Album</label>
@@ -44,13 +49,38 @@
             <input id="file-picker" type="file" accept="image/*" multiple hidden />
           </div>
 
-          <p id="status">Locked. Enter passcode to start.</p>
+          <p id="status">Locked. Sign in to start.</p>
+
+          <section id="admin-panel" class="admin-panel" hidden>
+            <h2 class="admin-title">Admin Panel</h2>
+            <p class="admin-subtitle">Create users and control shared album access.</p>
+
+            <form id="create-user-form" class="create-user-form">
+              <label for="new-user-username">New username</label>
+              <input id="new-user-username" type="text" maxlength="40" autocomplete="off" />
+              <label for="new-user-password">New user password</label>
+              <input id="new-user-password" type="password" maxlength="128" autocomplete="off" />
+              <label for="new-user-role">Role</label>
+              <select id="new-user-role">
+                <option value="user">User</option>
+                <option value="admin">Admin</option>
+              </select>
+              <button type="submit">Create User</button>
+            </form>
+
+            <p id="admin-status" class="admin-status"></p>
+            <div id="admin-users-list" class="admin-users-list"></div>
+          </section>
         </section>
 
         <aside class="album-panel">
           <h2 class="album-title">Album</h2>
           <p class="album-subtitle">Browse uploaded photos by album.</p>
           <div class="album-filters">
+            <label for="owner-filter">View User</label>
+            <select id="owner-filter">
+              <option value="">All visible users</option>
+            </select>
             <label for="album-filter">View Album</label>
             <select id="album-filter">
               <option value="">All albums</option>

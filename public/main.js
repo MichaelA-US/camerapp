@@ -1,58 +1,86 @@
 const loginForm = document.getElementById("login-form");
-const nameInput = document.getElementById("photographer-name");
-const passcodeInput = document.getElementById("passcode");
+const usernameInput = document.getElementById("username");
+const passwordInput = document.getElementById("password");
+const sessionUserEl = document.getElementById("session-user");
+const logoutButton = document.getElementById("logout-button");
+
 const albumInput = document.getElementById("album-name");
 const publicToggleInput = document.getElementById("public-toggle");
 const captureButton = document.getElementById("capture");
 const flipButton = document.getElementById("flip-camera");
 const uploadFilesButton = document.getElementById("upload-files");
 const filePickerInput = document.getElementById("file-picker");
+
 const video = document.getElementById("preview");
 const canvas = document.getElementById("capture-canvas");
 const statusEl = document.getElementById("status");
+
 const albumGridEl = document.getElementById("album-grid");
+const ownerFilterSelect = document.getElementById("owner-filter");
 const albumFilterSelect = document.getElementById("album-filter");
 const publicOnlyFilterInput = document.getElementById("public-only-filter");
+
 const previewModalEl = document.getElementById("preview-modal");
 const previewBackdropEl = document.getElementById("preview-backdrop");
 const previewCloseEl = document.getElementById("preview-close");
 const previewImageEl = document.getElementById("preview-image");
 
+const adminPanelEl = document.getElementById("admin-panel");
+const createUserForm = document.getElementById("create-user-form");
+const newUserUsernameInput = document.getElementById("new-user-username");
+const newUserPasswordInput = document.getElementById("new-user-password");
+const newUserRoleSelect = document.getElementById("new-user-role");
+const adminStatusEl = document.getElementById("admin-status");
+const adminUsersListEl = document.getElementById("admin-users-list");
+
 const TOKEN_KEY = "onlineCameraToken";
-const NAME_KEY = "onlineCameraName";
+const USERNAME_KEY = "onlineCameraUsername";
 const ALBUM_KEY = "onlineCameraAlbum";
 const PUBLIC_UPLOAD_KEY = "onlineCameraPublicUpload";
 const FILTER_ALBUM_KEY = "onlineCameraFilterAlbum";
 const FILTER_PUBLIC_KEY = "onlineCameraFilterPublic";
-const MAX_ALBUM_ITEMS = 60;
+const FILTER_OWNER_KEY = "onlineCameraFilterOwner";
+const MAX_ALBUM_ITEMS = 80;
 
 let authToken = localStorage.getItem(TOKEN_KEY) || "";
-let photographerName = localStorage.getItem(NAME_KEY) || "";
+let authUser = null;
 let stream = null;
 let currentFacingMode = "environment";
 let hasMultipleCameras = true;
+
 let selectedAlbumFilter = normalizeOptionalAlbum(localStorage.getItem(FILTER_ALBUM_KEY));
+let selectedOwnerFilter = normalizeOwnerFilter(localStorage.getItem(FILTER_OWNER_KEY));
 let publicOnlyFilter = parseBooleanFlag(localStorage.getItem(FILTER_PUBLIC_KEY), false);
 
 const albumEntries = new Map();
 const albumOrder = [];
 const knownAlbums = new Set();
+const knownOwners = new Map();
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
   statusEl.classList.toggle("error", isError);
 }
 
-function authHeaders() {
-  return {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${authToken}`
-  };
+function setAdminStatus(message, isError = false) {
+  if (!adminStatusEl) return;
+  adminStatusEl.textContent = message || "";
+  adminStatusEl.classList.toggle("error", isError);
 }
 
-function normalizeName(value) {
+function authHeaders(includeJsonContentType = true) {
+  const headers = {
+    Authorization: `Bearer ${authToken}`
+  };
+  if (includeJsonContentType) {
+    headers["Content-Type"] = "application/json";
+  }
+  return headers;
+}
+
+function normalizeUsername(value) {
   if (typeof value !== "string") return "";
-  return value.trim().replace(/\s+/g, " ").slice(0, 60);
+  return value.trim().toLowerCase().slice(0, 40);
 }
 
 function normalizeAlbum(value) {
@@ -65,6 +93,11 @@ function normalizeOptionalAlbum(value) {
   if (typeof value !== "string") return "";
   const trimmed = value.trim();
   return trimmed ? normalizeAlbum(trimmed) : "";
+}
+
+function normalizeOwnerFilter(value) {
+  if (typeof value !== "string") return "";
+  return value.trim();
 }
 
 function normalizeImageContentType(value) {
@@ -97,16 +130,59 @@ function formatAlbumTime(timestamp) {
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+function isAdmin() {
+  return authUser?.role === "admin";
+}
+
+function setSessionUi() {
+  if (authUser) {
+    sessionUserEl.textContent = `${authUser.username} (${authUser.role})`;
+    logoutButton.disabled = false;
+    usernameInput.value = authUser.username;
+  } else {
+    sessionUserEl.textContent = "Not signed in";
+    logoutButton.disabled = true;
+  }
+
+  adminPanelEl.hidden = !isAdmin();
+  setCameraControlsEnabled(Boolean(authUser));
+}
+
+function closePhotoPreview() {
+  if (previewModalEl.hidden) return;
+  previewModalEl.hidden = true;
+  previewImageEl.removeAttribute("src");
+}
+
 function clearSession() {
   localStorage.removeItem(TOKEN_KEY);
   authToken = "";
+  authUser = null;
   stopCameraStream();
-  setCameraControlsEnabled(false);
   closePhotoPreview();
+
+  albumOrder.slice().forEach((key) => removeAlbumEntry(key, { render: false, syncFilters: false }));
+  knownOwners.clear();
+  knownAlbums.clear();
+  registerAlbum("general");
+  syncOwnerFilterOptions();
+  syncAlbumFilterOptions();
+  renderAlbum();
+
+  adminUsersListEl.innerHTML = "";
+  setAdminStatus("");
+
+  setSessionUi();
 }
 
 function registerAlbum(value) {
   knownAlbums.add(normalizeAlbum(value));
+}
+
+function registerOwner(id, username) {
+  if (typeof id !== "string" || !id.trim()) return;
+  const normalizedUsername = normalizeUsername(username);
+  knownOwners.set(id, normalizedUsername || id);
 }
 
 function syncAlbumFilterOptions() {
@@ -133,6 +209,31 @@ function syncAlbumFilterOptions() {
   }
 }
 
+function syncOwnerFilterOptions() {
+  ownerFilterSelect.innerHTML = "";
+
+  const allOption = document.createElement("option");
+  allOption.value = "";
+  allOption.textContent = "All visible users";
+  ownerFilterSelect.appendChild(allOption);
+
+  Array.from(knownOwners.entries())
+    .sort((a, b) => a[1].localeCompare(b[1]))
+    .forEach(([ownerId, username]) => {
+      const option = document.createElement("option");
+      option.value = ownerId;
+      option.textContent = username;
+      ownerFilterSelect.appendChild(option);
+    });
+
+  if (selectedOwnerFilter && knownOwners.has(selectedOwnerFilter)) {
+    ownerFilterSelect.value = selectedOwnerFilter;
+  } else {
+    selectedOwnerFilter = "";
+    ownerFilterSelect.value = "";
+  }
+}
+
 function currentUploadOptions() {
   const album = normalizeAlbum(albumInput.value);
   const isPublic = Boolean(publicToggleInput.checked);
@@ -148,91 +249,16 @@ function currentUploadOptions() {
   };
 }
 
-function updateAlbumFiltersFromUi() {
+function updateFiltersFromUi() {
+  selectedOwnerFilter = normalizeOwnerFilter(ownerFilterSelect.value);
   selectedAlbumFilter = normalizeOptionalAlbum(albumFilterSelect.value);
   publicOnlyFilter = Boolean(publicOnlyFilterInput.checked);
+
+  localStorage.setItem(FILTER_OWNER_KEY, selectedOwnerFilter);
   localStorage.setItem(FILTER_ALBUM_KEY, selectedAlbumFilter);
   localStorage.setItem(FILTER_PUBLIC_KEY, publicOnlyFilter ? "1" : "0");
+
   renderAlbum();
-}
-
-function renderAlbum() {
-  albumGridEl.innerHTML = "";
-
-  const visibleEntries = albumOrder
-    .map((key) => albumEntries.get(key))
-    .filter((item) => {
-      if (!item?.displayUrl) return false;
-      if (selectedAlbumFilter && item.album !== selectedAlbumFilter) return false;
-      if (publicOnlyFilter && !item.isPublic) return false;
-      return true;
-    });
-
-  if (visibleEntries.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "album-empty";
-
-    if (albumOrder.length === 0) {
-      empty.textContent = "No photos yet. Take one or upload from device.";
-    } else {
-      const albumLabel = selectedAlbumFilter ? ` in album \"${selectedAlbumFilter}\"` : "";
-      const publicLabel = publicOnlyFilter ? " (public only)" : "";
-      empty.textContent = `No visible photos${albumLabel}${publicLabel}.`;
-    }
-
-    albumGridEl.appendChild(empty);
-    return;
-  }
-
-  visibleEntries.forEach((item) => {
-    const card = document.createElement("button");
-    card.type = "button";
-    card.className = "album-item";
-    card.addEventListener("click", () => {
-      openPhotoPreview(item.displayUrl, item.key);
-    });
-
-    const img = document.createElement("img");
-    img.addEventListener("error", () => {
-      removeAlbumEntry(item.key);
-    });
-    img.src = item.displayUrl;
-    img.alt = item.key || "Captured photo";
-    card.appendChild(img);
-
-    const meta = document.createElement("span");
-    meta.className = "album-meta";
-    const time = formatAlbumTime(item.createdAt);
-    const info = [item.album || "general"];
-    if (item.isPublic) info.push("public");
-    if (time) info.push(time);
-    meta.textContent = info.join(" · ");
-    card.appendChild(meta);
-
-    albumGridEl.appendChild(card);
-  });
-}
-
-function openPhotoPreview(url, key = "Photo preview") {
-  if (!url) return;
-  previewImageEl.src = url;
-  previewImageEl.alt = key;
-  previewModalEl.hidden = false;
-}
-
-function closePhotoPreview() {
-  if (previewModalEl.hidden) return;
-  previewModalEl.hidden = true;
-  previewImageEl.removeAttribute("src");
-}
-
-function trimAlbumEntries() {
-  while (albumOrder.length > MAX_ALBUM_ITEMS) {
-    const key = albumOrder.pop();
-    if (!key) continue;
-
-    removeAlbumEntry(key, { render: false, syncFilters: false });
-  }
 }
 
 function removeAlbumEntry(key, { render = true, syncFilters = true } = {}) {
@@ -247,8 +273,19 @@ function removeAlbumEntry(key, { render = true, syncFilters = true } = {}) {
   const index = albumOrder.indexOf(key);
   if (index !== -1) albumOrder.splice(index, 1);
 
-  if (syncFilters) syncAlbumFilterOptions();
+  if (syncFilters) {
+    syncAlbumFilterOptions();
+    syncOwnerFilterOptions();
+  }
   if (render) renderAlbum();
+}
+
+function trimAlbumEntries() {
+  while (albumOrder.length > MAX_ALBUM_ITEMS) {
+    const key = albumOrder.pop();
+    if (!key) continue;
+    removeAlbumEntry(key, { render: false, syncFilters: false });
+  }
 }
 
 function upsertAlbumEntry(nextEntry, { promote = true, render = true } = {}) {
@@ -256,16 +293,26 @@ function upsertAlbumEntry(nextEntry, { promote = true, render = true } = {}) {
 
   const existing = albumEntries.get(nextEntry.key);
   const existingIndex = albumOrder.indexOf(nextEntry.key);
+
   const normalizedAlbum = normalizeAlbum(nextEntry.album || existing?.album);
+  const ownerUserId =
+    typeof nextEntry.ownerUserId === "string" && nextEntry.ownerUserId
+      ? nextEntry.ownerUserId
+      : existing?.ownerUserId || authUser?.id || "";
+  const ownerUsername = normalizeUsername(
+    nextEntry.ownerUsername || existing?.ownerUsername || authUser?.username || ""
+  );
 
   registerAlbum(normalizedAlbum);
+  if (ownerUserId) registerOwner(ownerUserId, ownerUsername || ownerUserId);
 
   const merged = {
     ...existing,
     ...nextEntry,
     album: normalizedAlbum,
+    ownerUserId,
+    ownerUsername,
     isPublic: parseBooleanFlag(nextEntry.isPublic, existing?.isPublic ?? false),
-    uploaderName: normalizeName(nextEntry.uploaderName || existing?.uploaderName || ""),
     createdAt: nextEntry.createdAt || existing?.createdAt || new Date().toISOString()
   };
 
@@ -295,15 +342,88 @@ function upsertAlbumEntry(nextEntry, { promote = true, render = true } = {}) {
 
   if (render) {
     syncAlbumFilterOptions();
+    syncOwnerFilterOptions();
     renderAlbum();
   }
 }
 
+function renderAlbum() {
+  albumGridEl.innerHTML = "";
+
+  const visibleEntries = albumOrder
+    .map((key) => albumEntries.get(key))
+    .filter((item) => {
+      if (!item?.displayUrl) return false;
+      if (selectedOwnerFilter && item.ownerUserId !== selectedOwnerFilter) return false;
+      if (selectedAlbumFilter && item.album !== selectedAlbumFilter) return false;
+      if (publicOnlyFilter && !item.isPublic) return false;
+      return true;
+    });
+
+  if (visibleEntries.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "album-empty";
+
+    if (albumOrder.length === 0) {
+      empty.textContent = "No photos yet. Capture or upload one.";
+    } else {
+      const ownerLabel = selectedOwnerFilter ? " for selected user" : "";
+      const albumLabel = selectedAlbumFilter ? ` in album \"${selectedAlbumFilter}\"` : "";
+      const publicLabel = publicOnlyFilter ? " (public only)" : "";
+      empty.textContent = `No visible photos${ownerLabel}${albumLabel}${publicLabel}.`;
+    }
+
+    albumGridEl.appendChild(empty);
+    return;
+  }
+
+  visibleEntries.forEach((item) => {
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "album-item";
+    card.addEventListener("click", () => {
+      openPhotoPreview(item.displayUrl, item.key);
+    });
+
+    const img = document.createElement("img");
+    img.addEventListener("error", () => {
+      removeAlbumEntry(item.key);
+    });
+    img.src = item.displayUrl;
+    img.alt = item.key || "Captured photo";
+    card.appendChild(img);
+
+    const meta = document.createElement("span");
+    meta.className = "album-meta";
+    const time = formatAlbumTime(item.createdAt);
+    const ownerLabel = item.ownerUsername || "user";
+    const info = [ownerLabel, item.album || "general"];
+    if (item.isPublic) info.push("public");
+    if (time) info.push(time);
+    meta.textContent = info.join(" · ");
+    card.appendChild(meta);
+
+    albumGridEl.appendChild(card);
+  });
+}
+
+function openPhotoPreview(url, key = "Photo preview") {
+  if (!url) return;
+  previewImageEl.src = url;
+  previewImageEl.alt = key;
+  previewModalEl.hidden = false;
+}
+
 function setCameraControlsEnabled(enabled) {
-  const canCapture = enabled && Boolean(stream);
+  const authenticated = Boolean(enabled && authUser);
+  const canCapture = authenticated && Boolean(stream);
+
   captureButton.disabled = !canCapture;
   flipButton.disabled = !canCapture || !hasMultipleCameras;
-  uploadFilesButton.disabled = !enabled;
+  uploadFilesButton.disabled = !authenticated;
+
+  albumInput.disabled = !authenticated;
+  publicToggleInput.disabled = !authenticated;
 }
 
 function stopCameraStream() {
@@ -326,59 +446,6 @@ async function refreshCameraCount() {
   } catch {
     hasMultipleCameras = true;
   }
-}
-
-async function loadRecentUploads() {
-  if (!authToken) return;
-
-  const url = new URL("/api/photos", window.location.origin);
-  url.searchParams.set("limit", "200");
-
-  const res = await fetch(`${url.pathname}${url.search}`, {
-    headers: {
-      Authorization: `Bearer ${authToken}`
-    }
-  });
-
-  if (!res.ok) {
-    if (res.status === 401) {
-      clearSession();
-      setStatus("Session expired. Enter passcode again.", true);
-    }
-    return;
-  }
-
-  const payload = await res.json();
-  const photos = Array.isArray(payload?.photos) ? payload.photos : [];
-  const albums = Array.isArray(payload?.albums) ? payload.albums : [];
-
-  albums.forEach(registerAlbum);
-
-  photos
-    .slice()
-    .reverse()
-    .forEach((photo) => {
-      if (!photo?.key) return;
-
-      const existing = albumEntries.get(photo.key);
-      upsertAlbumEntry(
-        {
-          key: photo.key,
-          createdAt: photo.createdAt,
-          displayUrl: photo.viewUrl || photo.publicUrl || existing?.displayUrl || "",
-          viewUrl: photo.viewUrl || existing?.viewUrl || null,
-          publicUrl: photo.publicUrl || existing?.publicUrl || null,
-          album: photo.album || existing?.album || "general",
-          isPublic: parseBooleanFlag(photo.isPublic, existing?.isPublic ?? false),
-          uploaderName: photo.uploaderName || existing?.uploaderName || "",
-          isLocalPreview: !(photo.viewUrl || photo.publicUrl) && Boolean(existing?.isLocalPreview)
-        },
-        { promote: !existing, render: false }
-      );
-    });
-
-  syncAlbumFilterOptions();
-  renderAlbum();
 }
 
 async function startCamera(requestedFacingMode = currentFacingMode) {
@@ -405,21 +472,21 @@ async function startCamera(requestedFacingMode = currentFacingMode) {
       await video.play();
 
       await refreshCameraCount();
-      setCameraControlsEnabled(Boolean(authToken));
-      setStatus(`Camera ready (${cameraLabel(currentFacingMode)}). Photos upload directly to cloud.`);
+      setCameraControlsEnabled(true);
+      setStatus(`Camera ready (${cameraLabel(currentFacingMode)}).`);
       return true;
     } catch (error) {
       console.error(error);
     }
   }
 
-  setCameraControlsEnabled(Boolean(authToken));
-  setStatus("Unable to access camera. You can still upload photos from device.", true);
+  setCameraControlsEnabled(true);
+  setStatus("Unable to access camera. You can still upload from device.", true);
   return false;
 }
 
 async function flipCamera() {
-  if (!authToken || !stream) return;
+  if (!authUser || !stream) return;
 
   const previousFacingMode = currentFacingMode;
   const nextFacingMode = currentFacingMode === "environment" ? "user" : "environment";
@@ -437,44 +504,140 @@ async function flipCamera() {
   setStatus(`Using ${cameraLabel(currentFacingMode)} camera.`);
 }
 
-async function login(passcode) {
-  const normalizedName = normalizeName(nameInput.value);
-  if (!normalizedName) {
-    throw new Error("Name is required.");
+function parseErrorBody(body, fallback) {
+  if (body && typeof body.error === "string" && body.error.trim()) {
+    return body.error;
+  }
+  return fallback;
+}
+
+async function login(username, password) {
+  const normalizedUsername = normalizeUsername(username);
+  if (!normalizedUsername) {
+    throw new Error("Username is required.");
+  }
+  if (!password) {
+    throw new Error("Password is required.");
   }
 
   const res = await fetch("/api/login", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "X-Passcode": passcode,
-      "X-Uploader-Name": normalizedName
+      "X-Username": normalizedUsername,
+      "X-Password": password
     },
-    body: JSON.stringify({ passcode, name: normalizedName })
+    body: JSON.stringify({ username: normalizedUsername, password })
   });
 
   if (!res.ok) {
-    let errorMessage = `Login failed (${res.status}).`;
-    try {
-      const body = await res.json();
-      if (body?.error) errorMessage = body.error;
-    } catch {
-      try {
-        const text = await res.text();
-        if (text) errorMessage = `${errorMessage} ${text}`;
-      } catch {
-        // ignore parse errors
-      }
-    }
-    throw new Error(errorMessage);
+    const body = await res.json().catch(() => null);
+    throw new Error(parseErrorBody(body, `Login failed (${res.status}).`));
   }
 
   const payload = await res.json();
   authToken = payload.token;
+  authUser = payload.user;
+
   localStorage.setItem(TOKEN_KEY, authToken);
-  photographerName = normalizeName(payload.name || normalizedName);
-  localStorage.setItem(NAME_KEY, photographerName);
-  nameInput.value = photographerName;
+  localStorage.setItem(USERNAME_KEY, authUser.username);
+
+  setSessionUi();
+
+  if (Array.isArray(payload.visibleUsers)) {
+    payload.visibleUsers.forEach((owner) => registerOwner(owner.id, owner.username));
+  }
+}
+
+async function fetchMe() {
+  if (!authToken) return null;
+
+  const res = await fetch("/api/me", {
+    headers: authHeaders(false)
+  });
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      clearSession();
+    }
+    return null;
+  }
+
+  const payload = await res.json();
+  authUser = payload.user;
+  localStorage.setItem(USERNAME_KEY, authUser.username);
+
+  if (Array.isArray(payload.visibleUsers)) {
+    payload.visibleUsers.forEach((owner) => registerOwner(owner.id, owner.username));
+  }
+
+  setSessionUi();
+  syncOwnerFilterOptions();
+  return payload;
+}
+
+async function loadRecentUploads() {
+  if (!authToken || !authUser) return;
+
+  const url = new URL("/api/photos", window.location.origin);
+  url.searchParams.set("limit", "240");
+
+  const res = await fetch(`${url.pathname}${url.search}`, {
+    headers: authHeaders(false)
+  });
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      clearSession();
+      setStatus("Session expired. Please sign in again.", true);
+    }
+    return;
+  }
+
+  const payload = await res.json();
+  const photos = Array.isArray(payload?.photos) ? payload.photos : [];
+  const albums = Array.isArray(payload?.albums) ? payload.albums : [];
+  const owners = Array.isArray(payload?.owners) ? payload.owners : [];
+
+  albums.forEach(registerAlbum);
+  owners.forEach((owner) => registerOwner(owner.id, owner.username));
+
+  photos
+    .slice()
+    .reverse()
+    .forEach((photo) => {
+      if (!photo?.key) return;
+
+      const existing = albumEntries.get(photo.key);
+      const ownerUserId = typeof photo.userId === "string" ? photo.userId : existing?.ownerUserId || "";
+      const ownerUsername =
+        normalizeUsername(photo.ownerUsername || photo.uploaderName || "") ||
+        normalizeUsername(existing?.ownerUsername || "") ||
+        knownOwners.get(ownerUserId) ||
+        "";
+
+      if (ownerUserId) registerOwner(ownerUserId, ownerUsername || ownerUserId);
+
+      upsertAlbumEntry(
+        {
+          key: photo.key,
+          createdAt: photo.createdAt,
+          displayUrl: photo.viewUrl || photo.publicUrl || existing?.displayUrl || "",
+          viewUrl: photo.viewUrl || existing?.viewUrl || null,
+          publicUrl: photo.publicUrl || existing?.publicUrl || null,
+          album: photo.album || existing?.album || "general",
+          isPublic: parseBooleanFlag(photo.isPublic, existing?.isPublic ?? false),
+          ownerUserId,
+          ownerUsername,
+          isLocalPreview: !(photo.viewUrl || photo.publicUrl) && Boolean(existing?.isLocalPreview)
+        },
+        { promote: !existing, render: false }
+      );
+    });
+
+  syncAlbumFilterOptions();
+  syncOwnerFilterOptions();
+  renderAlbum();
 }
 
 function captureBlob() {
@@ -500,11 +663,7 @@ function captureBlob() {
           return;
         }
 
-        resolve({
-          blob,
-          width,
-          height
-        });
+        resolve({ blob, width, height });
       },
       "image/jpeg",
       0.92
@@ -557,8 +716,8 @@ async function getUploadUrl(contentType, fileSize, uploadOptions) {
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: "Could not get upload URL." }));
-    throw new Error(body.error || "Could not get upload URL.");
+    const body = await res.json().catch(() => null);
+    throw new Error(parseErrorBody(body, "Could not get upload URL."));
   }
 
   return res.json();
@@ -572,8 +731,8 @@ async function saveMetadata(payload) {
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: "Could not save metadata." }));
-    throw new Error(body.error || "Could not save metadata.");
+    const body = await res.json().catch(() => null);
+    throw new Error(parseErrorBody(body, "Could not save metadata."));
   }
 
   return res.json();
@@ -626,8 +785,8 @@ async function uploadViaServer(blob, width, height, capturedAt, uploadOptions) {
   });
 
   if (!res.ok) {
-    const body = await res.json().catch(() => ({ error: "Proxy upload failed." }));
-    throw new Error(body.error || `Proxy upload failed (${res.status}).`);
+    const body = await res.json().catch(() => null);
+    throw new Error(parseErrorBody(body, `Proxy upload failed (${res.status}).`));
   }
 
   return res.json();
@@ -651,6 +810,7 @@ async function uploadSingleBlob(blob, width, height, capturedAt, uploadOptions) 
   if (uploadedPhoto?.key) {
     const remoteViewUrl = uploadedPhoto.viewUrl || uploadedPhoto.publicUrl || null;
     const localPreviewUrl = remoteViewUrl ? null : URL.createObjectURL(blob);
+
     upsertAlbumEntry({
       key: uploadedPhoto.key,
       createdAt: uploadedPhoto.createdAt || capturedAt,
@@ -659,7 +819,11 @@ async function uploadSingleBlob(blob, width, height, capturedAt, uploadOptions) 
       publicUrl: uploadedPhoto.publicUrl || null,
       album: uploadedPhoto.album || uploadOptions.album,
       isPublic: parseBooleanFlag(uploadedPhoto.isPublic, uploadOptions.isPublic),
-      uploaderName: uploadedPhoto.uploaderName || photographerName,
+      ownerUserId: uploadedPhoto.userId || authUser?.id || "",
+      ownerUsername:
+        normalizeUsername(uploadedPhoto.ownerUsername || uploadedPhoto.uploaderName || "") ||
+        authUser?.username ||
+        "",
       isLocalPreview: !remoteViewUrl
     });
   }
@@ -672,8 +836,8 @@ function shouldClearSessionForError(message) {
 }
 
 async function captureAndUpload() {
-  if (!authToken) {
-    setStatus("Login required.", true);
+  if (!authUser) {
+    setStatus("Sign in required.", true);
     return;
   }
 
@@ -705,13 +869,13 @@ async function captureAndUpload() {
 
     setStatus(error.message || "Upload failed.", true);
   } finally {
-    if (authToken) setCameraControlsEnabled(true);
+    if (authUser) setCameraControlsEnabled(true);
   }
 }
 
 async function uploadFilesFromDevice(fileList) {
-  if (!authToken) {
-    setStatus("Login required.", true);
+  if (!authUser) {
+    setStatus("Sign in required.", true);
     return;
   }
 
@@ -722,7 +886,6 @@ async function uploadFilesFromDevice(fileList) {
   }
 
   setCameraControlsEnabled(false);
-
   let uploadedCount = 0;
 
   try {
@@ -730,8 +893,7 @@ async function uploadFilesFromDevice(fileList) {
 
     for (let index = 0; index < files.length; index += 1) {
       const file = files[index];
-      const progress = `(${index + 1}/${files.length})`;
-      setStatus(`Uploading ${progress} ${file.name}`);
+      setStatus(`Uploading (${index + 1}/${files.length}) ${file.name}`);
 
       const { width, height } = await readImageDimensions(file);
       const capturedAt =
@@ -744,7 +906,7 @@ async function uploadFilesFromDevice(fileList) {
     }
 
     await loadRecentUploads();
-    setStatus(`Uploaded ${uploadedCount} photo${uploadedCount === 1 ? "" : "s"} to ${uploadOptions.album}.`);
+    setStatus(`Uploaded ${uploadedCount} photo${uploadedCount === 1 ? "" : "s"}.`);
   } catch (error) {
     console.error(error);
 
@@ -755,30 +917,208 @@ async function uploadFilesFromDevice(fileList) {
     setStatus(error.message || "Upload failed.", true);
   } finally {
     filePickerInput.value = "";
-    if (authToken) setCameraControlsEnabled(true);
+    if (authUser) setCameraControlsEnabled(true);
   }
+}
+
+function splitCsvList(value) {
+  if (typeof value !== "string") return [];
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function renderAdminUsers(users) {
+  adminUsersListEl.innerHTML = "";
+
+  if (!Array.isArray(users) || users.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "album-empty";
+    empty.textContent = "No users configured yet.";
+    adminUsersListEl.appendChild(empty);
+    return;
+  }
+
+  users.forEach((user) => {
+    const card = document.createElement("div");
+    card.className = "admin-user-card";
+
+    const head = document.createElement("div");
+    head.className = "admin-user-head";
+    head.textContent = user.username;
+
+    const meta = document.createElement("span");
+    meta.className = "admin-user-meta";
+    meta.textContent = user.id;
+    head.appendChild(meta);
+    card.appendChild(head);
+
+    const roleRow = document.createElement("div");
+    roleRow.className = "admin-user-row";
+    const roleLabel = document.createElement("label");
+    roleLabel.textContent = "Role";
+    const roleSelect = document.createElement("select");
+    roleSelect.innerHTML = '<option value="user">User</option><option value="admin">Admin</option>';
+    roleSelect.value = user.role === "admin" ? "admin" : "user";
+    roleRow.appendChild(roleLabel);
+    roleRow.appendChild(roleSelect);
+    card.appendChild(roleRow);
+
+    const activeRow = document.createElement("label");
+    activeRow.className = "check-row";
+    const activeInput = document.createElement("input");
+    activeInput.type = "checkbox";
+    activeInput.checked = Boolean(user.active);
+    const activeText = document.createElement("span");
+    activeText.textContent = "Account active";
+    activeRow.appendChild(activeInput);
+    activeRow.appendChild(activeText);
+    card.appendChild(activeRow);
+
+    const linksRow = document.createElement("div");
+    linksRow.className = "admin-user-row";
+    const linksLabel = document.createElement("label");
+    linksLabel.textContent = "Shared with users (comma usernames)";
+    const linksInput = document.createElement("input");
+    linksInput.type = "text";
+    linksInput.value = Array.isArray(user.linkedUsernames) ? user.linkedUsernames.join(", ") : "";
+    linksRow.appendChild(linksLabel);
+    linksRow.appendChild(linksInput);
+    card.appendChild(linksRow);
+
+    const passwordRow = document.createElement("div");
+    passwordRow.className = "admin-user-row";
+    const passwordLabel = document.createElement("label");
+    passwordLabel.textContent = "Reset password (optional)";
+    const passwordResetInput = document.createElement("input");
+    passwordResetInput.type = "password";
+    passwordResetInput.placeholder = "Leave blank to keep current";
+    passwordRow.appendChild(passwordLabel);
+    passwordRow.appendChild(passwordResetInput);
+    card.appendChild(passwordRow);
+
+    const actions = document.createElement("div");
+    actions.className = "admin-user-actions";
+    const saveButton = document.createElement("button");
+    saveButton.type = "button";
+    saveButton.textContent = "Save User";
+    actions.appendChild(saveButton);
+    card.appendChild(actions);
+
+    saveButton.addEventListener("click", async () => {
+      saveButton.disabled = true;
+      try {
+        const payload = {
+          role: roleSelect.value,
+          active: activeInput.checked,
+          linkedUsers: splitCsvList(linksInput.value)
+        };
+
+        if (passwordResetInput.value.trim()) {
+          payload.password = passwordResetInput.value;
+        }
+
+        const res = await fetch(`/api/admin/users/${encodeURIComponent(user.id)}`, {
+          method: "PATCH",
+          headers: authHeaders(),
+          body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(parseErrorBody(body, `Failed to update user (${res.status}).`));
+        }
+
+        const data = await res.json();
+        passwordResetInput.value = "";
+        renderAdminUsers(Array.isArray(data.users) ? data.users : []);
+        setAdminStatus(`Saved ${user.username}.`);
+
+        await fetchMe();
+        await loadRecentUploads();
+      } catch (error) {
+        setAdminStatus(error.message || "Failed to update user.", true);
+      } finally {
+        saveButton.disabled = false;
+      }
+    });
+
+    adminUsersListEl.appendChild(card);
+  });
+}
+
+async function loadAdminUsers() {
+  if (!isAdmin() || !authToken) {
+    adminUsersListEl.innerHTML = "";
+    setAdminStatus("");
+    return;
+  }
+
+  const res = await fetch("/api/admin/users", {
+    headers: authHeaders(false)
+  });
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      clearSession();
+      setStatus("Session expired. Please sign in again.", true);
+      return;
+    }
+    const body = await res.json().catch(() => null);
+    setAdminStatus(parseErrorBody(body, `Could not load users (${res.status}).`), true);
+    return;
+  }
+
+  const data = await res.json();
+  renderAdminUsers(Array.isArray(data.users) ? data.users : []);
+}
+
+async function restoreSession() {
+  if (!authToken) {
+    setStatus("Locked. Sign in to start.");
+    return;
+  }
+
+  setStatus("Restoring session...");
+  const me = await fetchMe();
+  if (!me?.user) {
+    setStatus("Session expired. Please sign in again.", true);
+    return;
+  }
+
+  await startCamera();
+  await loadRecentUploads();
+  await loadAdminUsers();
 }
 
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   try {
-    await login(passcodeInput.value);
-    passcodeInput.value = "";
+    await login(usernameInput.value, passwordInput.value);
+    passwordInput.value = "";
 
-    setStatus("Logged in. Starting camera...");
+    setStatus("Signed in. Starting camera...");
     await startCamera();
     await loadRecentUploads();
+    await loadAdminUsers();
   } catch (error) {
-    setStatus(error.message, true);
+    setStatus(error.message || "Sign in failed.", true);
   }
+});
+
+logoutButton.addEventListener("click", () => {
+  clearSession();
+  setStatus("Signed out.");
 });
 
 captureButton.addEventListener("click", captureAndUpload);
 flipButton.addEventListener("click", flipCamera);
+
 uploadFilesButton.addEventListener("click", () => {
-  if (!authToken) {
-    setStatus("Login required.", true);
+  if (!authUser) {
+    setStatus("Sign in required.", true);
     return;
   }
   filePickerInput.click();
@@ -804,8 +1144,9 @@ publicToggleInput.addEventListener("change", () => {
   localStorage.setItem(PUBLIC_UPLOAD_KEY, publicToggleInput.checked ? "1" : "0");
 });
 
-albumFilterSelect.addEventListener("change", updateAlbumFiltersFromUi);
-publicOnlyFilterInput.addEventListener("change", updateAlbumFiltersFromUi);
+ownerFilterSelect.addEventListener("change", updateFiltersFromUi);
+albumFilterSelect.addEventListener("change", updateFiltersFromUi);
+publicOnlyFilterInput.addEventListener("change", updateFiltersFromUi);
 
 previewCloseEl.addEventListener("click", closePhotoPreview);
 previewBackdropEl.addEventListener("click", closePhotoPreview);
@@ -814,22 +1155,68 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closePhotoPreview();
 });
 
-setCameraControlsEnabled(false);
-registerAlbum("general");
+createUserForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
 
-nameInput.value = photographerName;
+  if (!isAdmin()) {
+    setAdminStatus("Admin access required.", true);
+    return;
+  }
+
+  const username = normalizeUsername(newUserUsernameInput.value);
+  const password = newUserPasswordInput.value;
+  const role = newUserRoleSelect.value === "admin" ? "admin" : "user";
+
+  if (!username) {
+    setAdminStatus("Username is required.", true);
+    return;
+  }
+
+  if (password.length < 4) {
+    setAdminStatus("Password must be at least 4 characters.", true);
+    return;
+  }
+
+  try {
+    const res = await fetch("/api/admin/users", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ username, password, role })
+    });
+
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      throw new Error(parseErrorBody(body, `Could not create user (${res.status}).`));
+    }
+
+    const data = await res.json();
+    setAdminStatus(`Created user ${username}.`);
+
+    newUserUsernameInput.value = "";
+    newUserPasswordInput.value = "";
+    newUserRoleSelect.value = "user";
+
+    renderAdminUsers(Array.isArray(data.users) ? data.users : []);
+    await loadAdminUsers();
+  } catch (error) {
+    setAdminStatus(error.message || "Could not create user.", true);
+  }
+});
+
+setSessionUi();
+setCameraControlsEnabled(false);
+
+usernameInput.value = normalizeUsername(localStorage.getItem(USERNAME_KEY) || "");
 albumInput.value = normalizeAlbum(localStorage.getItem(ALBUM_KEY) || "general");
 publicToggleInput.checked = parseBooleanFlag(localStorage.getItem(PUBLIC_UPLOAD_KEY), false);
 publicOnlyFilterInput.checked = publicOnlyFilter;
 
+registerAlbum("general");
 syncAlbumFilterOptions();
+syncOwnerFilterOptions();
 renderAlbum();
 
-if (authToken) {
-  setStatus("Restoring session...");
-  startCamera()
-    .then(() => loadRecentUploads())
-    .catch(() => {
-      setStatus("Session found, but camera failed to start.", true);
-    });
-}
+restoreSession().catch((error) => {
+  console.error(error);
+  setStatus("Could not restore session.", true);
+});
