@@ -8,33 +8,36 @@
   </head>
   <body>
     <main class="app">
-      <section class="panel">
-        <h1>Cloud Camera</h1>
-        <p class="subtitle">Capture and upload directly to cloud storage.</p>
+      <div class="app-shell">
+        <section class="panel">
+          <h1>Cloud Camera</h1>
+          <p class="subtitle">Capture and upload directly to cloud storage.</p>
 
-        <form id="login-form" class="login-form">
-          <label for="passcode">Passcode</label>
-          <input id="passcode" type="password" autocomplete="current-password" required />
-          <button type="submit">Unlock Camera</button>
-        </form>
+          <form id="login-form" class="login-form">
+            <label for="passcode">Passcode</label>
+            <input id="passcode" type="password" autocomplete="current-password" required />
+            <button type="submit">Unlock Camera</button>
+          </form>
 
-        <div class="camera-wrap">
-          <video id="preview" playsinline autoplay muted></video>
-          <canvas id="capture-canvas" hidden></canvas>
-        </div>
+          <div class="camera-wrap">
+            <video id="preview" playsinline autoplay muted></video>
+            <canvas id="capture-canvas" hidden></canvas>
+          </div>
 
-        <div class="controls">
-          <button id="capture" disabled>Take Photo</button>
-          <button id="flip-camera" disabled>Flip Camera</button>
-        </div>
+          <div class="controls">
+            <button id="capture" disabled>Take Photo</button>
+            <button id="flip-camera" disabled>Flip Camera</button>
+          </div>
 
-        <p id="status">Locked. Enter passcode to start.</p>
-
-        <section class="recent">
-          <h2>Recent Uploads</h2>
-          <ul id="recent-uploads"></ul>
+          <p id="status">Locked. Enter passcode to start.</p>
         </section>
-      </section>
+
+        <aside class="album-panel">
+          <h2 class="album-title">Album</h2>
+          <p class="album-subtitle">Latest photos from this session.</p>
+          <div id="album-grid" class="album-grid"></div>
+        </aside>
+      </div>
     </main>
 
     <script type="module" src="/main.js"></script>

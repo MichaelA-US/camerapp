@@ -5,13 +5,16 @@ const flipButton = document.getElementById("flip-camera");
 const video = document.getElementById("preview");
 const canvas = document.getElementById("capture-canvas");
 const statusEl = document.getElementById("status");
-const recentUploadsEl = document.getElementById("recent-uploads");
+const albumGridEl = document.getElementById("album-grid");
 
 const TOKEN_KEY = "onlineCameraToken";
+const MAX_ALBUM_ITEMS = 40;
 let authToken = localStorage.getItem(TOKEN_KEY) || "";
 let stream = null;
 let currentFacingMode = "environment";
 let hasMultipleCameras = true;
+const albumEntries = new Map();
+const albumOrder = [];
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
@@ -36,6 +39,106 @@ function normalizeFileSize(value) {
 
 function cameraLabel(facingMode) {
   return facingMode === "user" ? "front" : "rear";
+}
+
+function formatAlbumTime(timestamp) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function renderAlbum() {
+  albumGridEl.innerHTML = "";
+  let renderedCount = 0;
+
+  if (albumOrder.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "album-empty";
+    empty.textContent = "No photos yet. Take one and it will appear here.";
+    albumGridEl.appendChild(empty);
+    return;
+  }
+
+  albumOrder.forEach((key) => {
+    const item = albumEntries.get(key);
+    if (!item?.displayUrl) return;
+
+    const card = document.createElement("a");
+    card.className = "album-item";
+    card.href = item.publicUrl || item.displayUrl;
+    card.target = "_blank";
+    card.rel = "noopener noreferrer";
+
+    const img = document.createElement("img");
+    img.src = item.displayUrl;
+    img.alt = item.key || "Captured photo";
+    card.appendChild(img);
+
+    const meta = document.createElement("span");
+    meta.className = "album-meta";
+    const time = formatAlbumTime(item.createdAt);
+    meta.textContent = time || "Photo";
+    card.appendChild(meta);
+
+    albumGridEl.appendChild(card);
+    renderedCount += 1;
+  });
+
+  if (renderedCount === 0) {
+    const empty = document.createElement("p");
+    empty.className = "album-empty";
+    empty.textContent = "No preview available for older photos yet.";
+    albumGridEl.appendChild(empty);
+  }
+}
+
+function trimAlbumEntries() {
+  while (albumOrder.length > MAX_ALBUM_ITEMS) {
+    const key = albumOrder.pop();
+    if (!key) continue;
+    const entry = albumEntries.get(key);
+    if (entry?.isLocalPreview && typeof entry.displayUrl === "string" && entry.displayUrl.startsWith("blob:")) {
+      URL.revokeObjectURL(entry.displayUrl);
+    }
+    albumEntries.delete(key);
+  }
+}
+
+function upsertAlbumEntry(nextEntry, { promote = true, render = true } = {}) {
+  if (!nextEntry?.key) return;
+
+  const existing = albumEntries.get(nextEntry.key);
+  const existingIndex = albumOrder.indexOf(nextEntry.key);
+  const merged = {
+    ...existing,
+    ...nextEntry,
+    createdAt: nextEntry.createdAt || existing?.createdAt || new Date().toISOString()
+  };
+
+  if (
+    existing?.isLocalPreview &&
+    typeof existing.displayUrl === "string" &&
+    existing.displayUrl.startsWith("blob:") &&
+    merged.displayUrl &&
+    merged.displayUrl !== existing.displayUrl
+  ) {
+    URL.revokeObjectURL(existing.displayUrl);
+  }
+
+  albumEntries.set(nextEntry.key, merged);
+
+  if (existingIndex !== -1) {
+    albumOrder.splice(existingIndex, 1);
+  }
+
+  if (promote || existingIndex === -1) {
+    albumOrder.unshift(nextEntry.key);
+  } else {
+    albumOrder.splice(existingIndex, 0, nextEntry.key);
+  }
+
+  trimAlbumEntries();
+  if (render) renderAlbum();
 }
 
 function setCameraControlsEnabled(enabled) {
@@ -85,21 +188,23 @@ async function loadRecentUploads() {
   }
 
   const { photos } = await res.json();
-  recentUploadsEl.innerHTML = "";
-  photos.slice(0, 10).forEach((photo) => {
-    const item = document.createElement("li");
-    const date = new Date(photo.createdAt).toLocaleString();
-    item.textContent = `${date} - ${photo.key}`;
-    if (photo.publicUrl) {
-      const link = document.createElement("a");
-      link.href = photo.publicUrl;
-      link.textContent = "view";
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      item.append(" (", link, ")");
-    }
-    recentUploadsEl.appendChild(item);
-  });
+  photos
+    .slice(0, 30)
+    .reverse()
+    .forEach((photo) => {
+      const existing = albumEntries.get(photo.key);
+      upsertAlbumEntry(
+        {
+          key: photo.key,
+          createdAt: photo.createdAt,
+          displayUrl: photo.publicUrl || existing?.displayUrl || "",
+          publicUrl: photo.publicUrl || existing?.publicUrl || null,
+          isLocalPreview: !photo.publicUrl && Boolean(existing?.isLocalPreview)
+        },
+        { promote: !existing, render: false }
+      );
+    });
+  renderAlbum();
 }
 
 async function startCamera(requestedFacingMode = currentFacingMode) {
@@ -247,9 +352,10 @@ async function saveMetadata(payload) {
     const body = await res.json().catch(() => ({ error: "Could not save metadata." }));
     throw new Error(body.error || "Could not save metadata.");
   }
+  return res.json();
 }
 
-async function uploadViaSignedUrl(blob, width, height) {
+async function uploadViaSignedUrl(blob, width, height, capturedAt) {
   const contentType = normalizeImageContentType(blob.type);
   const uploadInfo = await getUploadUrl(contentType, blob.size);
   const uploadRes = await fetch(uploadInfo.uploadUrl, {
@@ -264,25 +370,25 @@ async function uploadViaSignedUrl(blob, width, height) {
     throw new Error(`Upload failed (${uploadRes.status}).`);
   }
 
-  await saveMetadata({
+  return saveMetadata({
     key: uploadInfo.key,
     contentType,
     sizeBytes: blob.size,
     width,
     height,
-    capturedAt: new Date().toISOString(),
+    capturedAt,
     publicUrl: uploadInfo.publicUrl
   });
 }
 
-async function uploadViaServer(blob, width, height) {
+async function uploadViaServer(blob, width, height, capturedAt) {
   const contentType = normalizeImageContentType(blob.type);
   const res = await fetch("/api/upload", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${authToken}`,
       "Content-Type": contentType,
-      "X-Captured-At": new Date().toISOString(),
+      "X-Captured-At": capturedAt,
       "X-Image-Width": String(width),
       "X-Image-Height": String(height)
     },
@@ -293,6 +399,7 @@ async function uploadViaServer(blob, width, height) {
     const body = await res.json().catch(() => ({ error: "Proxy upload failed." }));
     throw new Error(body.error || `Proxy upload failed (${res.status}).`);
   }
+  return res.json();
 }
 
 async function captureAndUpload() {
@@ -300,9 +407,11 @@ async function captureAndUpload() {
   try {
     setStatus("Capturing photo...");
     const { blob, width, height } = await captureBlob();
+    const capturedAt = new Date().toISOString();
     setStatus("Preparing upload...");
+    let uploadedPhoto = null;
     try {
-      await uploadViaServer(blob, width, height);
+      uploadedPhoto = await uploadViaServer(blob, width, height, capturedAt);
       setStatus("Uploaded successfully (server relay).");
     } catch (relayError) {
       const relayMessage = String(relayError?.message || "");
@@ -312,8 +421,19 @@ async function captureAndUpload() {
 
       // For large files, try direct signed upload as a fallback path.
       setStatus("Server relay size limit reached. Trying direct upload...");
-      await uploadViaSignedUrl(blob, width, height);
+      uploadedPhoto = await uploadViaSignedUrl(blob, width, height, capturedAt);
       setStatus("Uploaded successfully (direct upload).");
+    }
+
+    if (uploadedPhoto?.key) {
+      const localPreviewUrl = uploadedPhoto.publicUrl ? null : URL.createObjectURL(blob);
+      upsertAlbumEntry({
+        key: uploadedPhoto.key,
+        createdAt: uploadedPhoto.createdAt || capturedAt,
+        displayUrl: uploadedPhoto.publicUrl || localPreviewUrl || "",
+        publicUrl: uploadedPhoto.publicUrl || null,
+        isLocalPreview: !uploadedPhoto.publicUrl
+      });
     }
 
     await loadRecentUploads();
@@ -348,6 +468,7 @@ captureButton.addEventListener("click", captureAndUpload);
 flipButton.addEventListener("click", flipCamera);
 
 setCameraControlsEnabled(false);
+renderAlbum();
 
 if (authToken) {
   setStatus("Restoring session...");
