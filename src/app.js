@@ -310,6 +310,10 @@ app.post("/api/login", (req, res) => {
   });
 });
 
+app.get("/api/login", (_req, res) => {
+  res.status(405).json({ error: "Use POST /api/login with a passcode body." });
+});
+
 app.post("/api/upload-url", auth, async (req, res, next) => {
   try {
     if (!requireEnvVars(res, S3_REQUIRED_ENV)) {

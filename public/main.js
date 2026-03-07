@@ -248,7 +248,7 @@ async function captureAndUpload() {
 loginForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    await login(passcodeInput.value.trim());
+    await login(passcodeInput.value);
     passcodeInput.value = "";
     setStatus("Logged in. Starting camera...");
     await startCamera();
