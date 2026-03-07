@@ -1,6 +1,7 @@
 const loginForm = document.getElementById("login-form");
 const passcodeInput = document.getElementById("passcode");
 const captureButton = document.getElementById("capture");
+const flipButton = document.getElementById("flip-camera");
 const video = document.getElementById("preview");
 const canvas = document.getElementById("capture-canvas");
 const statusEl = document.getElementById("status");
@@ -9,6 +10,8 @@ const recentUploadsEl = document.getElementById("recent-uploads");
 const TOKEN_KEY = "onlineCameraToken";
 let authToken = localStorage.getItem(TOKEN_KEY) || "";
 let stream = null;
+let currentFacingMode = "environment";
+let hasMultipleCameras = true;
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
@@ -31,6 +34,37 @@ function normalizeFileSize(value) {
   return Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
 }
 
+function cameraLabel(facingMode) {
+  return facingMode === "user" ? "front" : "rear";
+}
+
+function setCameraControlsEnabled(enabled) {
+  captureButton.disabled = !enabled;
+  flipButton.disabled = !enabled || !hasMultipleCameras;
+}
+
+function stopCameraStream() {
+  if (!stream) return;
+  stream.getTracks().forEach((track) => track.stop());
+  stream = null;
+  video.srcObject = null;
+}
+
+async function refreshCameraCount() {
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    hasMultipleCameras = true;
+    return;
+  }
+
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const cameraCount = devices.filter((device) => device.kind === "videoinput").length;
+    hasMultipleCameras = cameraCount > 1;
+  } catch {
+    hasMultipleCameras = true;
+  }
+}
+
 async function loadRecentUploads() {
   if (!authToken) return;
   const res = await fetch("/api/photos", {
@@ -43,8 +77,9 @@ async function loadRecentUploads() {
     if (res.status === 401) {
       localStorage.removeItem(TOKEN_KEY);
       authToken = "";
+      stopCameraStream();
+      setCameraControlsEnabled(false);
       setStatus("Session expired. Enter passcode again.", true);
-      captureButton.disabled = true;
     }
     return;
   }
@@ -67,25 +102,60 @@ async function loadRecentUploads() {
   });
 }
 
-async function startCamera() {
-  if (stream) return;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: { ideal: "environment" },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 }
-      },
-      audio: false
-    });
-    video.srcObject = stream;
-    await video.play();
-    setStatus("Camera ready. Photos upload directly to cloud.");
-    captureButton.disabled = false;
-  } catch (error) {
-    console.error(error);
-    setStatus("Unable to access camera. Allow camera permission in Safari.", true);
+async function startCamera(requestedFacingMode = currentFacingMode) {
+  stopCameraStream();
+
+  const candidateModes = Array.from(
+    new Set([requestedFacingMode, requestedFacingMode === "environment" ? "user" : "environment"])
+  );
+
+  for (const facingMode of candidateModes) {
+    try {
+      const nextStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: facingMode },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        },
+        audio: false
+      });
+
+      stream = nextStream;
+      currentFacingMode = facingMode;
+      video.srcObject = stream;
+      await video.play();
+
+      await refreshCameraCount();
+      setCameraControlsEnabled(Boolean(authToken));
+      setStatus(`Camera ready (${cameraLabel(currentFacingMode)}). Photos upload directly to cloud.`);
+      return true;
+    } catch (error) {
+      console.error(error);
+    }
   }
+
+  setCameraControlsEnabled(false);
+  setStatus("Unable to access camera. Allow camera permission in Safari.", true);
+  return false;
+}
+
+async function flipCamera() {
+  if (!authToken) return;
+
+  const previousFacingMode = currentFacingMode;
+  const nextFacingMode = currentFacingMode === "environment" ? "user" : "environment";
+  setStatus(`Switching to ${cameraLabel(nextFacingMode)} camera...`);
+  setCameraControlsEnabled(false);
+
+  const started = await startCamera(nextFacingMode);
+  if (!started) return;
+
+  if (currentFacingMode === previousFacingMode) {
+    setStatus(`Could not switch cameras. Staying on ${cameraLabel(previousFacingMode)} camera.`, true);
+    return;
+  }
+
+  setStatus(`Using ${cameraLabel(currentFacingMode)} camera.`);
 }
 
 async function login(passcode) {
@@ -226,7 +296,7 @@ async function uploadViaServer(blob, width, height) {
 }
 
 async function captureAndUpload() {
-  captureButton.disabled = true;
+  setCameraControlsEnabled(false);
   try {
     setStatus("Capturing photo...");
     const { blob, width, height } = await captureBlob();
@@ -252,10 +322,12 @@ async function captureAndUpload() {
     if (error.message.includes("Unauthorized")) {
       localStorage.removeItem(TOKEN_KEY);
       authToken = "";
+      stopCameraStream();
+      setCameraControlsEnabled(false);
     }
     setStatus(error.message || "Upload failed.", true);
   } finally {
-    if (authToken) captureButton.disabled = false;
+    if (authToken && stream) setCameraControlsEnabled(true);
   }
 }
 
@@ -265,19 +337,25 @@ loginForm.addEventListener("submit", async (event) => {
     await login(passcodeInput.value);
     passcodeInput.value = "";
     setStatus("Logged in. Starting camera...");
-    await startCamera();
-    await loadRecentUploads();
+    const started = await startCamera();
+    if (started) await loadRecentUploads();
   } catch (error) {
     setStatus(error.message, true);
   }
 });
 
 captureButton.addEventListener("click", captureAndUpload);
+flipButton.addEventListener("click", flipCamera);
+
+setCameraControlsEnabled(false);
 
 if (authToken) {
   setStatus("Restoring session...");
   startCamera()
-    .then(loadRecentUploads)
+    .then((started) => {
+      if (started) return loadRecentUploads();
+      return null;
+    })
     .catch(() => {
       setStatus("Session found, but camera failed to start.", true);
     });

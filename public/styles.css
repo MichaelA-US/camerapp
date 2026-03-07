@@ -106,10 +106,12 @@ video {
 .controls {
   margin-top: 12px;
   display: flex;
+  gap: 10px;
 }
 
-#capture {
-  width: 100%;
+#capture,
+#flip-camera {
+  flex: 1;
 }
 
 #status {

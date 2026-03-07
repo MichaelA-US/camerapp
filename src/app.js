@@ -163,8 +163,9 @@ function extensionFromType(contentType) {
 }
 
 function buildObjectKey(userId, extension) {
-  const day = new Date().toISOString().slice(0, 10);
-  return `${userId}/${day}/${Date.now()}-${randomId()}.${extension}`;
+  const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+  const shortId = `${Date.now().toString(36)}${crypto.randomBytes(2).toString("hex")}`;
+  return `${userId}/${day}/${shortId}.${extension}`;
 }
 
 function buildPublicUrl(key) {
