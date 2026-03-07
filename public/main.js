@@ -351,12 +351,13 @@ async function loadRecentUploads() {
         {
           key: photo.key,
           createdAt: photo.createdAt,
-          displayUrl: photo.publicUrl || existing?.displayUrl || "",
+          displayUrl: photo.viewUrl || photo.publicUrl || existing?.displayUrl || "",
+          viewUrl: photo.viewUrl || existing?.viewUrl || null,
           publicUrl: photo.publicUrl || existing?.publicUrl || null,
           album: photo.album || existing?.album || "general",
           isPublic: parseBooleanFlag(photo.isPublic, existing?.isPublic ?? false),
           uploaderName: photo.uploaderName || existing?.uploaderName || "",
-          isLocalPreview: !photo.publicUrl && Boolean(existing?.isLocalPreview)
+          isLocalPreview: !(photo.viewUrl || photo.publicUrl) && Boolean(existing?.isLocalPreview)
         },
         { promote: !existing, render: false }
       );
@@ -634,16 +635,18 @@ async function uploadSingleBlob(blob, width, height, capturedAt, uploadOptions) 
   }
 
   if (uploadedPhoto?.key) {
-    const localPreviewUrl = uploadedPhoto.publicUrl ? null : URL.createObjectURL(blob);
+    const remoteViewUrl = uploadedPhoto.viewUrl || uploadedPhoto.publicUrl || null;
+    const localPreviewUrl = remoteViewUrl ? null : URL.createObjectURL(blob);
     upsertAlbumEntry({
       key: uploadedPhoto.key,
       createdAt: uploadedPhoto.createdAt || capturedAt,
-      displayUrl: uploadedPhoto.publicUrl || localPreviewUrl || "",
+      displayUrl: remoteViewUrl || localPreviewUrl || "",
+      viewUrl: uploadedPhoto.viewUrl || null,
       publicUrl: uploadedPhoto.publicUrl || null,
       album: uploadedPhoto.album || uploadOptions.album,
       isPublic: parseBooleanFlag(uploadedPhoto.isPublic, uploadOptions.isPublic),
       uploaderName: uploadedPhoto.uploaderName || photographerName,
-      isLocalPreview: !uploadedPhoto.publicUrl
+      isLocalPreview: !remoteViewUrl
     });
   }
 

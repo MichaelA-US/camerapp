@@ -19,6 +19,7 @@ const defaultMaxFileSizeMb = process.env.NETLIFY ? 4 : 10;
 const maxFileSizeBytes = Number(process.env.MAX_FILE_SIZE_MB ?? defaultMaxFileSizeMb) * 1024 * 1024;
 const tokenTtlSeconds = Number(process.env.TOKEN_TTL_SECONDS ?? 86400 * 7);
 const signedUrlSeconds = Number(process.env.SIGNED_URL_TTL_SECONDS ?? 60);
+const photoViewUrlSeconds = Number(process.env.PHOTO_VIEW_URL_TTL_SECONDS ?? Math.max(signedUrlSeconds, 1800));
 const publicBaseUrl = process.env.PUBLIC_ASSET_BASE_URL ?? "";
 const isServerlessRuntime = Boolean(
   process.env.NETLIFY ||
@@ -220,6 +221,22 @@ function buildObjectKey(userId, extension, uploaderName = "", album = "general")
 
 function buildPublicUrl(key) {
   return publicBaseUrl ? `${publicBaseUrl.replace(/\/$/, "")}/${key}` : null;
+}
+
+async function buildSignedViewUrl(key) {
+  if (typeof key !== "string" || key.length === 0) return null;
+  if (missingEnvVars(S3_REQUIRED_ENV).length > 0) return null;
+
+  try {
+    const command = new GetObjectCommand({
+      Bucket: process.env.S3_BUCKET,
+      Key: key
+    });
+    return await getSignedUrl(s3, command, { expiresIn: photoViewUrlSeconds });
+  } catch (error) {
+    console.error("Could not create signed view URL:", error);
+    return null;
+  }
 }
 
 function metadataIndexKey(userId) {
@@ -621,6 +638,7 @@ app.post("/api/upload", auth, rawUploadParser, async (req, res, next) => {
 
     res.status(201).json({
       ...entry,
+      viewUrl: entry.publicUrl || (await buildSignedViewUrl(entry.key)),
       metadataStored,
       metadataStoreBackend
     });
@@ -669,6 +687,7 @@ app.post("/api/photos", auth, async (req, res, next) => {
 
     res.status(201).json({
       ...entry,
+      viewUrl: entry.publicUrl || (await buildSignedViewUrl(entry.key)),
       metadataStored,
       metadataStoreBackend
     });
@@ -713,8 +732,15 @@ app.get("/api/photos", auth, async (req, res, next) => {
       })
       .slice(0, limit);
 
+    const photosWithViewUrls = await Promise.all(
+      photos.map(async (item) => ({
+        ...item,
+        viewUrl: item.publicUrl || (await buildSignedViewUrl(item.key))
+      }))
+    );
+
     res.json({
-      photos,
+      photos: photosWithViewUrls,
       albums,
       filters: {
         album: normalizedAlbumFilter || null,
