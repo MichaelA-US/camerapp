@@ -38,7 +38,7 @@ const metadataBackend =
 const metadataPrefix = String(process.env.METADATA_PREFIX ?? "_meta").replace(/^\/+|\/+$/g, "");
 const rawUploadParser = express.raw({ type: () => true, limit: maxFileSizeBytes });
 
-const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._-]{1,39}$/;
+const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._@+\- ]{1,39}$/;
 const ROLE_VALUES = new Set(["admin", "user"]);
 
 const s3 = new S3Client({
@@ -148,7 +148,7 @@ function coercePositiveNumber(value) {
 
 function normalizeUsername(value) {
   if (typeof value !== "string") return "";
-  return value.trim().toLowerCase().slice(0, 40);
+  return value.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 40);
 }
 
 function isValidUsername(username) {
@@ -486,7 +486,7 @@ function createUserRecord({ username, password, role = "user", active = true }) 
   const normalizedUsername = normalizeUsername(username);
   if (!isValidUsername(normalizedUsername)) {
     throw new Error(
-      "Invalid username. Use 2-40 characters: lowercase letters, numbers, dot, underscore, dash."
+      "Invalid username. Use 2-40 chars with letters, numbers, spaces, dot, underscore, dash, @, or +."
     );
   }
 
@@ -617,6 +617,16 @@ function countActiveAdmins(users, ignoreUserId = "", nextRole = "", nextActive =
   }).length;
 }
 
+function bootstrapAdminIdForUsername(username) {
+  const normalized = normalizeUsername(username) || "admin";
+  const digest = crypto
+    .createHash("sha256")
+    .update(`bootstrap-admin:${normalized}`)
+    .digest("hex")
+    .slice(0, 20);
+  return `user_bootstrap_${digest}`;
+}
+
 function buildBootstrapAdminUser() {
   const bootstrapPassword = process.env.ADMIN_PASSWORD ?? process.env.APP_PASSCODE ?? "";
   if (!bootstrapPassword) return null;
@@ -625,12 +635,16 @@ function buildBootstrapAdminUser() {
   const username = isValidUsername(configuredUsername) ? configuredUsername : "admin";
 
   try {
-    return createUserRecord({
+    const user = createUserRecord({
       username,
       password: bootstrapPassword,
       role: "admin",
       active: true
     });
+    // Serverless runtimes can serve consecutive requests from different ephemeral instances.
+    // A stable bootstrap admin id keeps auth tokens valid even when store bootstrapping repeats.
+    user.id = bootstrapAdminIdForUsername(username);
+    return user;
   } catch (error) {
     console.error("Could not bootstrap admin user from environment:", error);
     return null;
@@ -1000,7 +1014,7 @@ app.post("/api/admin/users", auth, requireAdmin, async (req, res, next) => {
 
     if (!isValidUsername(username)) {
       res.status(400).json({
-        error: "Invalid username. Use 2-40 chars: lowercase letters, numbers, dot, underscore, dash."
+        error: "Invalid username. Use 2-40 chars with letters, numbers, spaces, dot, underscore, dash, @, or +."
       });
       return;
     }

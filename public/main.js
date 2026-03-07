@@ -41,6 +41,9 @@ const FILTER_ALBUM_KEY = "onlineCameraFilterAlbum";
 const FILTER_PUBLIC_KEY = "onlineCameraFilterPublic";
 const FILTER_OWNER_KEY = "onlineCameraFilterOwner";
 const MAX_ALBUM_ITEMS = 80;
+const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._@+\- ]{1,39}$/;
+const USERNAME_RULES_ERROR =
+  "Username must be 2-40 chars and may include letters, numbers, spaces, dot, underscore, dash, @, or +.";
 
 let authToken = localStorage.getItem(TOKEN_KEY) || "";
 let authUser = null;
@@ -80,7 +83,11 @@ function authHeaders(includeJsonContentType = true) {
 
 function normalizeUsername(value) {
   if (typeof value !== "string") return "";
-  return value.trim().toLowerCase().slice(0, 40);
+  return value.trim().toLowerCase().replace(/\s+/g, " ").slice(0, 40);
+}
+
+function isValidUsername(value) {
+  return USERNAME_PATTERN.test(value);
 }
 
 function normalizeAlbum(value) {
@@ -515,6 +522,9 @@ async function login(username, password) {
   const normalizedUsername = normalizeUsername(username);
   if (!normalizedUsername) {
     throw new Error("Username is required.");
+  }
+  if (!isValidUsername(normalizedUsername)) {
+    throw new Error(USERNAME_RULES_ERROR);
   }
   if (!password) {
     throw new Error("Password is required.");
@@ -1169,6 +1179,10 @@ createUserForm.addEventListener("submit", async (event) => {
 
   if (!username) {
     setAdminStatus("Username is required.", true);
+    return;
+  }
+  if (!isValidUsername(username)) {
+    setAdminStatus(USERNAME_RULES_ERROR, true);
     return;
   }
 
