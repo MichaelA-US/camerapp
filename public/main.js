@@ -22,6 +22,15 @@ function authHeaders() {
   };
 }
 
+function normalizeImageContentType(value) {
+  const normalized = typeof value === "string" ? value.split(";")[0].trim().toLowerCase() : "";
+  return normalized || "image/jpeg";
+}
+
+function normalizeFileSize(value) {
+  return Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+}
+
 async function loadRecentUploads() {
   if (!authToken) return;
   const res = await fetch("/api/photos", {
@@ -140,10 +149,16 @@ function captureBlob() {
 }
 
 async function getUploadUrl(contentType, fileSize) {
+  const normalizedContentType = normalizeImageContentType(contentType);
+  const normalizedFileSize = normalizeFileSize(fileSize);
   const res = await fetch("/api/upload-url", {
     method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify({ contentType, fileSize })
+    headers: {
+      ...authHeaders(),
+      "X-Content-Type": normalizedContentType,
+      "X-File-Size": String(normalizedFileSize)
+    },
+    body: JSON.stringify({ contentType: normalizedContentType, fileSize: normalizedFileSize })
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: "Could not get upload URL." }));
@@ -175,11 +190,12 @@ function isLikelyCorsBlock(error) {
 }
 
 async function uploadViaSignedUrl(blob, width, height) {
-  const uploadInfo = await getUploadUrl(blob.type, blob.size);
+  const contentType = normalizeImageContentType(blob.type);
+  const uploadInfo = await getUploadUrl(contentType, blob.size);
   const uploadRes = await fetch(uploadInfo.uploadUrl, {
     method: "PUT",
     headers: {
-      "Content-Type": blob.type
+      "Content-Type": contentType
     },
     body: blob
   });
@@ -190,7 +206,7 @@ async function uploadViaSignedUrl(blob, width, height) {
 
   await saveMetadata({
     key: uploadInfo.key,
-    contentType: blob.type,
+    contentType,
     sizeBytes: blob.size,
     width,
     height,
@@ -200,11 +216,12 @@ async function uploadViaSignedUrl(blob, width, height) {
 }
 
 async function uploadViaServer(blob, width, height) {
+  const contentType = normalizeImageContentType(blob.type);
   const res = await fetch("/api/upload", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${authToken}`,
-      "Content-Type": blob.type,
+      "Content-Type": contentType,
       "X-Captured-At": new Date().toISOString(),
       "X-Image-Width": String(width),
       "X-Image-Height": String(height)

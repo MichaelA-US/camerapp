@@ -130,6 +130,15 @@ function normalizeContentType(contentType) {
   return contentType.split(";")[0].trim().toLowerCase();
 }
 
+function coercePositiveNumber(value) {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
+  if (typeof value === "string" && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return null;
+}
+
 function extensionFromType(contentType) {
   const map = {
     "image/jpeg": "jpg",
@@ -329,19 +338,27 @@ app.post("/api/upload-url", auth, async (req, res, next) => {
     }
 
     const { contentType, fileSize } = req.body ?? {};
-    const normalizedContentType = normalizeContentType(contentType);
+    const headerContentType = req.headers["x-content-type"];
+    const headerFileSize = req.headers["x-file-size"];
+
+    const normalizedContentType = normalizeContentType(
+      typeof contentType === "string" && contentType.length > 0 ? contentType : headerContentType
+    );
+    const effectiveFileSize = coercePositiveNumber(
+      typeof fileSize === "number" ? fileSize : Array.isArray(headerFileSize) ? headerFileSize[0] : headerFileSize
+    );
 
     if (!normalizedContentType) {
       res.status(400).json({ error: "contentType is required." });
       return;
     }
 
-    if (typeof fileSize !== "number" || fileSize <= 0) {
+    if (!effectiveFileSize) {
       res.status(400).json({ error: "fileSize must be a positive number." });
       return;
     }
 
-    if (fileSize > maxFileSizeBytes) {
+    if (effectiveFileSize > maxFileSizeBytes) {
       res.status(413).json({
         error: `File is too large. Max size is ${Math.round(maxFileSizeBytes / (1024 * 1024))} MB.`
       });
