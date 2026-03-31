@@ -635,6 +635,17 @@ video {
   box-shadow: 0 36px 60px -30px rgba(0, 0, 0, 0.68);
 }
 
+.preview-modal.is-video-preview .preview-content {
+  width: min(78vw, 420px);
+  max-height: none;
+  padding: 0;
+  gap: 12px;
+  justify-items: center;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
 .preview-download {
   background: var(--accent);
   color: #f6f2ec;
@@ -648,6 +659,16 @@ video {
 
 .preview-close {
   justify-self: end;
+}
+
+.preview-modal.is-video-preview .preview-actions {
+  order: 2;
+  justify-content: center;
+  width: auto;
+}
+
+.preview-modal.is-video-preview .preview-close {
+  display: none;
 }
 
 .preview-image,
@@ -681,6 +702,18 @@ video {
 .preview-player,
 .preview-player video {
   background: #050707;
+}
+
+.preview-modal.is-video-preview .preview-player {
+  order: 1;
+  width: min(78vw, 420px);
+  max-height: min(52vh, 340px);
+  border-radius: 18px;
+  background: transparent;
+}
+
+.preview-modal.is-video-preview .preview-player video {
+  max-height: min(52vh, 340px);
 }
 
 @keyframes pulse-recording {
@@ -763,6 +796,21 @@ video {
 
   .preview-player video {
     max-height: min(46vh, 280px);
+  }
+
+  .preview-modal.is-video-preview .preview-content {
+    width: min(74vw, 280px);
+    gap: 10px;
+  }
+
+  .preview-modal.is-video-preview .preview-player {
+    width: min(74vw, 280px);
+    max-height: min(30vh, 190px);
+    border-radius: 14px;
+  }
+
+  .preview-modal.is-video-preview .preview-player video {
+    max-height: min(30vh, 190px);
   }
 
   .zoom-value {

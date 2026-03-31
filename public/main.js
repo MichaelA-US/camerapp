@@ -862,6 +862,7 @@ function openPhotoPreview(url, key = "Media preview", mediaType = "image", thumb
   syncPreviewDownloadButton();
 
   if (mediaType === "video") {
+    previewModalEl.classList.add("is-video-preview");
     previewImageEl.hidden = true;
     previewImageEl.removeAttribute("src");
     previewPlayerEl.hidden = false;
@@ -870,6 +871,7 @@ function openPhotoPreview(url, key = "Media preview", mediaType = "image", thumb
     previewVideoEl.setAttribute("aria-label", key);
     previewVideoEl.load();
   } else {
+    previewModalEl.classList.remove("is-video-preview");
     previewVideoEl.pause();
     previewPlayerEl.hidden = true;
     previewVideoEl.removeAttribute("poster");
@@ -886,6 +888,7 @@ function openPhotoPreview(url, key = "Media preview", mediaType = "image", thumb
 function closePhotoPreview() {
   if (previewModalEl.hidden) return;
   previewModalEl.hidden = true;
+  previewModalEl.classList.remove("is-video-preview");
   activePreview = null;
   previewDownloadInFlight = false;
   syncPreviewDownloadButton();
