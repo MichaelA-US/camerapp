@@ -183,6 +183,12 @@ function formatAlbumTime(timestamp) {
   return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+function mediaFormatLabel(item) {
+  const key = typeof item?.key === "string" ? item.key : "";
+  const extension = key.includes(".") ? key.split(".").pop() : "";
+  return extension ? extension.toUpperCase() : item?.mediaType === "video" ? "VIDEO" : "IMAGE";
+}
+
 function cameraLabel(facingMode) {
   return facingMode === "user" ? "front" : "rear";
 }
@@ -608,27 +614,23 @@ function renderAlbum() {
     });
 
     if (item.mediaType === "video") {
-      const media = document.createElement("video");
-      media.src = item.displayUrl;
-      media.muted = true;
-      media.defaultMuted = true;
-      media.playsInline = true;
-      media.autoplay = true;
-      media.loop = true;
-      media.preload = "auto";
-      media.disablePictureInPicture = true;
-      media.setAttribute("aria-label", item.key || "Captured video");
-      media.setAttribute("tabindex", "-1");
-      media.addEventListener("loadeddata", () => {
-        const playAttempt = media.play();
-        if (playAttempt && typeof playAttempt.catch === "function") {
-          playAttempt.catch(() => {});
-        }
-      });
-      media.addEventListener("error", () => {
-        removeAlbumEntry(item.key);
-      });
-      card.appendChild(media);
+      card.classList.add("album-item-video");
+
+      const surface = document.createElement("div");
+      surface.className = "album-video-surface";
+
+      const playGlyph = document.createElement("span");
+      playGlyph.className = "album-video-play";
+      playGlyph.setAttribute("aria-hidden", "true");
+      playGlyph.textContent = "Play";
+      surface.appendChild(playGlyph);
+
+      const formatLabel = document.createElement("span");
+      formatLabel.className = "album-video-format";
+      formatLabel.textContent = mediaFormatLabel(item);
+      surface.appendChild(formatLabel);
+
+      card.appendChild(surface);
 
       const badge = document.createElement("span");
       badge.className = "album-badge";
