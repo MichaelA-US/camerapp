@@ -139,11 +139,16 @@
             </button>
           </div>
           <img id="preview-image" class="preview-image" alt="Media preview" />
-          <video id="preview-video" class="preview-video" playsinline controls hidden></video>
+          <video-player id="preview-player" class="preview-player" hidden>
+            <video-skin>
+              <video id="preview-video" playsinline preload="metadata"></video>
+            </video-skin>
+          </video-player>
         </div>
       </div>
     </main>
 
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@videojs/html/cdn/video.js"></script>
     <script type="module" src="/main.js"></script>
   </body>
 </html>

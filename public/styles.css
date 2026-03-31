@@ -651,16 +651,34 @@ video {
 }
 
 .preview-image,
-.preview-video {
+.preview-player {
   width: 100%;
   max-height: calc(90vh - 84px);
   display: block;
-  object-fit: contain;
   border-radius: 16px;
   background: #000;
 }
 
-.preview-video {
+.preview-image {
+  object-fit: contain;
+}
+
+.preview-player {
+  overflow: hidden;
+}
+
+.preview-player[hidden] {
+  display: none !important;
+}
+
+.preview-player video {
+  display: block;
+  width: 100%;
+  max-height: calc(90vh - 84px);
+}
+
+.preview-player,
+.preview-player video {
   background: #050707;
 }
 

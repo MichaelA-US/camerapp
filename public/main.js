@@ -37,6 +37,7 @@ const previewBackdropEl = document.getElementById("preview-backdrop");
 const previewDownloadEl = document.getElementById("preview-download");
 const previewCloseEl = document.getElementById("preview-close");
 const previewImageEl = document.getElementById("preview-image");
+const previewPlayerEl = document.getElementById("preview-player");
 const previewVideoEl = document.getElementById("preview-video");
 
 const NAME_KEY = "onlineCameraProfileName";
@@ -863,14 +864,14 @@ function openPhotoPreview(url, key = "Media preview", mediaType = "image", thumb
   if (mediaType === "video") {
     previewImageEl.hidden = true;
     previewImageEl.removeAttribute("src");
-    previewVideoEl.hidden = false;
+    previewPlayerEl.hidden = false;
     previewVideoEl.poster = thumbnailUrl || "";
     previewVideoEl.src = url;
     previewVideoEl.setAttribute("aria-label", key);
     previewVideoEl.load();
   } else {
     previewVideoEl.pause();
-    previewVideoEl.hidden = true;
+    previewPlayerEl.hidden = true;
     previewVideoEl.removeAttribute("poster");
     previewVideoEl.removeAttribute("src");
     previewVideoEl.load();
@@ -891,7 +892,7 @@ function closePhotoPreview() {
   previewImageEl.removeAttribute("src");
   previewImageEl.hidden = true;
   previewVideoEl.pause();
-  previewVideoEl.hidden = true;
+  previewPlayerEl.hidden = true;
   previewVideoEl.removeAttribute("poster");
   previewVideoEl.removeAttribute("src");
   previewVideoEl.load();
@@ -1987,7 +1988,7 @@ clearCameraEnhancements();
 updateRecordingUi();
 recordVideoButton.hidden = !canRecordVideo();
 previewImageEl.hidden = true;
-previewVideoEl.hidden = true;
+previewPlayerEl.hidden = true;
 syncPreviewDownloadButton();
 syncAlbumFilterOptions();
 renderAlbum();
