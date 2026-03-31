@@ -1633,7 +1633,10 @@ async function initializeProtectedApp() {
   try {
     const session = await loadSessionState();
     if (!session?.authEnabled) {
-      setUnlockStatus("This app is locked until APP_PASSWORD is configured on the server.", true);
+      setUnlockStatus(
+        "This app is locked until APP_PASSWORD (or legacy APP_PASSCODE) is configured on the server.",
+        true
+      );
       return;
     }
 

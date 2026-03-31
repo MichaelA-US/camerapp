@@ -76,6 +76,7 @@ Recommended CORS policy:
 In `.env`:
 
 - `APP_PASSWORD`: shared password required before anyone can open the camera or gallery
+- `APP_PASSCODE`: legacy alias for `APP_PASSWORD`; if both are set, `APP_PASSWORD` wins
 - `MAX_FILE_SIZE_MB`: max photo or video upload size
 - `PUBLIC_ASSET_BASE_URL`: optional public base URL for direct image links
 - `METADATA_BACKEND`: set to `s3` on serverless hosts such as Netlify
@@ -104,6 +105,8 @@ This repo includes:
    - `MAX_FILE_SIZE_MB=150`
 5. Deploy.
 
+Use `APP_PASSWORD` on Netlify. `APP_PASSCODE` still works as a legacy alias, but only when `APP_PASSWORD` is absent.
+
 Why `METADATA_BACKEND=s3`: Netlify Functions do not provide persistent local disk, so photo metadata is stored in object storage (`_meta/<contributor>/index.json` plus the contributor directory).
 
 Why `MAX_FILE_SIZE_MB=150`: larger videos should still go straight to object storage through signed URLs, while the backend relay remains a fallback for smaller uploads.
@@ -129,8 +132,10 @@ This runs static frontend + function routes together.
 ### Troubleshooting Netlify 502/500
 
 - Open `/.netlify/functions/api/health` after deploy.
-- Check `contributorsCount` and `missingS3Config` in the JSON response.
+- Check `authEnabled`, `authConfigSource`, `contributorsCount`, and `missingS3Config` in the JSON response.
+- If both `APP_PASSWORD` and `APP_PASSCODE` exist in Netlify, the app uses `APP_PASSWORD`.
 - In Netlify UI, ensure variables are set for the **same context** (Production/Preview) you are testing.
+- Trigger a fresh deploy after changing auth env vars so the function and static site are on the same release.
 - Check Netlify Function logs for `/api/upload` or `/api/photos` errors.
 
 ## 5) Deploy elsewhere

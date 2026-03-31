@@ -39,6 +39,7 @@ const rawUploadParser = express.raw({ type: () => true, limit: maxFileSizeBytes 
 const authCookieName = "cameraapp_unlock";
 const authSessionHours = Math.max(1, Math.floor(Number(process.env.AUTH_SESSION_HOURS ?? 12) || 12));
 const authSessionSeconds = authSessionHours * 60 * 60;
+const sharedPasswordSource = envKey("APP_PASSWORD", "APP_PASSCODE");
 const sharedPassword = envString("APP_PASSWORD", "APP_PASSCODE");
 const authCookieSecret =
   envString("AUTH_COOKIE_SECRET", "TOKEN_SECRET") ||
@@ -79,6 +80,16 @@ function envString(...keys) {
     const value = process.env[key];
     if (typeof value === "string" && value.trim().length > 0) {
       return value.trim();
+    }
+  }
+  return "";
+}
+
+function envKey(...keys) {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return key;
     }
   }
   return "";
@@ -239,7 +250,7 @@ function requireConfiguredPassword(res) {
   if (hasConfiguredPassword()) return true;
 
   res.status(503).json({
-    error: "Server misconfigured. APP_PASSWORD is not set."
+    error: "Server misconfigured. APP_PASSWORD (or legacy APP_PASSCODE) is not set."
   });
   return false;
 }
@@ -787,6 +798,7 @@ app.get("/api/health", async (_req, res) => {
   res.json({
     ok: true,
     authEnabled: hasConfiguredPassword(),
+    authConfigSource: sharedPasswordSource || null,
     authSessionHours,
     metadataBackend,
     metadataBackendRequested: metadataBackendRaw,
