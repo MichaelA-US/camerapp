@@ -131,12 +131,13 @@ This runs static frontend + function routes together.
 
 ### Troubleshooting Netlify 502/500
 
-- Open `/.netlify/functions/api/health` after deploy.
+- Open `/api/health` after deploy.
 - Check `authEnabled`, `authConfigSource`, `contributorsCount`, and `missingS3Config` in the JSON response.
 - If both `APP_PASSWORD` and `APP_PASSCODE` exist in Netlify, the app uses `APP_PASSWORD`.
 - In Netlify UI, ensure variables are set for the **same context** (Production/Preview) you are testing.
 - Trigger a fresh deploy after changing auth env vars so the function and static site are on the same release.
 - Check Netlify Function logs for `/api/upload` or `/api/photos` errors.
+- `/.netlify/functions/api/health` now works too, but `/api/health` is the public route you should use from the site.
 
 ## 5) Deploy elsewhere
 

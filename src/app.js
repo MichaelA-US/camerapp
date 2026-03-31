@@ -65,6 +65,35 @@ const s3 = new S3Client({
 
 app.use(express.json({ limit: "2mb" }));
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
+app.use((req, res, next) => {
+  if (!Buffer.isBuffer(req.body)) {
+    next();
+    return;
+  }
+
+  const contentType = normalizeContentType(req.headers["content-type"]);
+  if (!contentType) {
+    next();
+    return;
+  }
+
+  try {
+    if (contentType === "application/json") {
+      const raw = req.body.toString("utf8");
+      req.body = raw ? JSON.parse(raw) : {};
+      next();
+      return;
+    }
+
+    if (contentType === "application/x-www-form-urlencoded") {
+      req.body = Object.fromEntries(new URLSearchParams(req.body.toString("utf8")).entries());
+    }
+
+    next();
+  } catch {
+    res.status(400).json({ error: "Invalid request body." });
+  }
+});
 app.use(express.static(path.join(rootDir, "public")));
 
 const S3_REQUIRED_ENV = [
