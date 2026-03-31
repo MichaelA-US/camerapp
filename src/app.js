@@ -16,9 +16,8 @@ const usersPath = path.join(dataDir, "users.json");
 
 const app = express();
 const port = Number(process.env.PORT ?? 3000);
-const defaultMaxFileSizeMb = process.env.NETLIFY ? 4 : 10;
+const defaultMaxFileSizeMb = process.env.NETLIFY ? 150 : 250;
 const maxFileSizeBytes = Number(process.env.MAX_FILE_SIZE_MB ?? defaultMaxFileSizeMb) * 1024 * 1024;
-const tokenTtlSeconds = Number(process.env.TOKEN_TTL_SECONDS ?? 86400 * 7);
 const signedUrlSeconds = Number(process.env.SIGNED_URL_TTL_SECONDS ?? 60);
 const photoViewUrlSeconds = Number(process.env.PHOTO_VIEW_URL_TTL_SECONDS ?? Math.max(signedUrlSeconds, 1800));
 const publicBaseUrl = process.env.PUBLIC_ASSET_BASE_URL ?? "";
@@ -37,9 +36,21 @@ const metadataBackend =
   isServerlessRuntime && parsedMetadataBackend === "file" ? "s3" : parsedMetadataBackend;
 const metadataPrefix = String(process.env.METADATA_PREFIX ?? "_meta").replace(/^\/+|\/+$/g, "");
 const rawUploadParser = express.raw({ type: () => true, limit: maxFileSizeBytes });
+const authCookieName = "cameraapp_unlock";
+const authSessionHours = Math.max(1, Math.floor(Number(process.env.AUTH_SESSION_HOURS ?? 12) || 12));
+const authSessionSeconds = authSessionHours * 60 * 60;
+const sharedPassword = envString("APP_PASSWORD", "APP_PASSCODE");
+const authCookieSecret =
+  envString("AUTH_COOKIE_SECRET", "TOKEN_SECRET") ||
+  sharedPassword ||
+  crypto.randomBytes(32).toString("hex");
+const sharedPasswordHash = sharedPassword
+  ? crypto.createHash("sha256").update(sharedPassword).digest()
+  : null;
+const passwordFingerprint = sharedPasswordHash ? sharedPasswordHash.toString("hex").slice(0, 24) : "";
 
 const USERNAME_PATTERN = /^[a-z0-9][a-z0-9._@+\- ]{0,39}$/;
-const ROLE_VALUES = new Set(["admin", "user"]);
+const DEFAULT_UPLOADER_NAME = "camera";
 
 const s3 = new S3Client({
   region: process.env.S3_REGION,
@@ -63,6 +74,16 @@ const S3_REQUIRED_ENV = [
   "S3_REGION"
 ];
 
+function envString(...keys) {
+  for (const key of keys) {
+    const value = process.env[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
 function missingEnvVars(keys) {
   return keys.filter((key) => !process.env[key]);
 }
@@ -81,50 +102,161 @@ function canUseS3() {
   return missingEnvVars(S3_REQUIRED_ENV).length === 0;
 }
 
-function base64url(input) {
-  return Buffer.from(input).toString("base64url");
+function hasConfiguredPassword() {
+  return Boolean(sharedPasswordHash && sharedPassword);
 }
 
-function hmac(input) {
-  return crypto.createHmac("sha256", process.env.TOKEN_SECRET).update(input).digest("base64url");
-}
+function constantTimeEqual(left, right) {
+  const leftBuffer = Buffer.isBuffer(left) ? left : Buffer.from(String(left));
+  const rightBuffer = Buffer.isBuffer(right) ? right : Buffer.from(String(right));
 
-function createToken(user) {
-  const payload = {
-    sub: user.id,
-    un: user.username,
-    rl: user.role,
-    exp: Math.floor(Date.now() / 1000) + tokenTtlSeconds
-  };
-  const encodedPayload = base64url(JSON.stringify(payload));
-  const signature = hmac(encodedPayload);
-  return `${encodedPayload}.${signature}`;
-}
-
-function verifyToken(token) {
-  const parts = token.split(".");
-  if (parts.length !== 2) return null;
-
-  const [encodedPayload, signature] = parts;
-  const expectedSignature = hmac(encodedPayload);
-  const signatureBuffer = Buffer.from(signature);
-  const expectedBuffer = Buffer.from(expectedSignature);
-
-  if (signatureBuffer.length !== expectedBuffer.length) return null;
-  if (!crypto.timingSafeEqual(signatureBuffer, expectedBuffer)) return null;
-
-  let payload;
-  try {
-    payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf8"));
-  } catch {
-    return null;
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
   }
 
-  if (typeof payload.exp !== "number" || typeof payload.sub !== "string") return null;
-  if (payload.un !== undefined && typeof payload.un !== "string") return null;
-  if (payload.rl !== undefined && typeof payload.rl !== "string") return null;
-  if (payload.exp < Math.floor(Date.now() / 1000)) return null;
-  return payload;
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function passwordMatches(candidate) {
+  if (!sharedPasswordHash || typeof candidate !== "string") return false;
+  const candidateHash = crypto.createHash("sha256").update(candidate).digest();
+  return constantTimeEqual(candidateHash, sharedPasswordHash);
+}
+
+function parseCookies(cookieHeader) {
+  if (typeof cookieHeader !== "string" || cookieHeader.trim().length === 0) {
+    return {};
+  }
+
+  return cookieHeader.split(/;\s*/).reduce((cookies, pair) => {
+    const separatorIndex = pair.indexOf("=");
+    if (separatorIndex <= 0) return cookies;
+
+    const name = pair.slice(0, separatorIndex).trim();
+    const rawValue = pair.slice(separatorIndex + 1).trim();
+    if (!name) return cookies;
+
+    try {
+      cookies[name] = decodeURIComponent(rawValue);
+    } catch {
+      cookies[name] = rawValue;
+    }
+
+    return cookies;
+  }, {});
+}
+
+function isSecureRequest(req) {
+  if (req.secure) return true;
+
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  if (typeof forwardedProto === "string" && forwardedProto.trim().length > 0) {
+    return forwardedProto.split(",")[0].trim() === "https";
+  }
+
+  if (Array.isArray(forwardedProto) && typeof forwardedProto[0] === "string") {
+    return forwardedProto[0].trim() === "https";
+  }
+
+  return Boolean(process.env.NETLIFY);
+}
+
+function serializeCookie(name, value, req, maxAgeSeconds = authSessionSeconds) {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    "Path=/",
+    "HttpOnly",
+    "SameSite=Lax"
+  ];
+
+  if (Number.isFinite(maxAgeSeconds)) {
+    parts.push(`Max-Age=${Math.max(0, Math.floor(maxAgeSeconds))}`);
+  }
+
+  if (isSecureRequest(req)) {
+    parts.push("Secure");
+  }
+
+  return parts.join("; ");
+}
+
+function clearAuthCookie(req, res) {
+  res.setHeader("Set-Cookie", serializeCookie(authCookieName, "", req, 0));
+}
+
+function setNoStore(res) {
+  res.setHeader("Cache-Control", "no-store");
+}
+
+function signAuthPayload(payload) {
+  return crypto.createHmac("sha256", authCookieSecret).update(payload).digest("base64url");
+}
+
+function createAuthToken() {
+  const payload = Buffer.from(
+    JSON.stringify({
+      exp: Date.now() + authSessionSeconds * 1000,
+      fp: passwordFingerprint
+    })
+  ).toString("base64url");
+
+  return `${payload}.${signAuthPayload(payload)}`;
+}
+
+function isValidAuthToken(token) {
+  if (typeof token !== "string" || token.trim().length === 0) return false;
+
+  const separatorIndex = token.lastIndexOf(".");
+  if (separatorIndex <= 0 || separatorIndex === token.length - 1) return false;
+
+  const payload = token.slice(0, separatorIndex);
+  const signature = token.slice(separatorIndex + 1);
+  const expectedSignature = signAuthPayload(payload);
+
+  if (!constantTimeEqual(signature, expectedSignature)) {
+    return false;
+  }
+
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return (
+      Number.isFinite(decoded?.exp) &&
+      decoded.exp > Date.now() &&
+      decoded.fp === passwordFingerprint
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isAuthenticatedRequest(req) {
+  if (!hasConfiguredPassword()) return false;
+  const cookies = parseCookies(req.headers.cookie);
+  return isValidAuthToken(cookies[authCookieName]);
+}
+
+function requireConfiguredPassword(res) {
+  if (hasConfiguredPassword()) return true;
+
+  res.status(503).json({
+    error: "Server misconfigured. APP_PASSWORD is not set."
+  });
+  return false;
+}
+
+function requireAuthenticatedApp(req, res, next) {
+  if (!requireConfiguredPassword(res)) {
+    return;
+  }
+
+  if (isAuthenticatedRequest(req)) {
+    next();
+    return;
+  }
+
+  setNoStore(res);
+  clearAuthCookie(req, res);
+  res.status(401).json({ error: "Unlock required." });
 }
 
 function randomId(prefix = "") {
@@ -166,7 +298,7 @@ function slugFromUsername(value) {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 24);
-  return slug || "user";
+  return slug || DEFAULT_UPLOADER_NAME;
 }
 
 function slugFromAlbum(value) {
@@ -189,12 +321,6 @@ function parseBooleanFlag(value, defaultValue = false) {
   return defaultValue;
 }
 
-function normalizeRole(value) {
-  if (typeof value !== "string") return "user";
-  const normalized = value.trim().toLowerCase();
-  return ROLE_VALUES.has(normalized) ? normalized : "user";
-}
-
 function extensionFromType(contentType) {
   const map = {
     "image/jpeg": "jpg",
@@ -202,9 +328,19 @@ function extensionFromType(contentType) {
     "image/png": "png",
     "image/webp": "webp",
     "image/heic": "heic",
-    "image/heif": "heif"
+    "image/heif": "heif",
+    "video/mp4": "mp4",
+    "video/quicktime": "mov",
+    "video/webm": "webm",
+    "video/x-m4v": "m4v"
   };
   return map[contentType] ?? null;
+}
+
+function mediaTypeFromContentType(contentType) {
+  const normalized = normalizeContentType(contentType);
+  if (normalized.startsWith("video/")) return "video";
+  return "image";
 }
 
 function metadataIndexKey(userId) {
@@ -213,6 +349,16 @@ function metadataIndexKey(userId) {
 
 function usersIndexKey() {
   return `${metadataPrefix}/_admin/users.json`;
+}
+
+function contributorIdForUsername(username) {
+  const normalized = normalizeUsername(username) || DEFAULT_UPLOADER_NAME;
+  const digest = crypto
+    .createHash("sha256")
+    .update(`online-camera-app:${normalized}`)
+    .digest("hex")
+    .slice(0, 20);
+  return `user_${digest}`;
 }
 
 function buildObjectKey(userId, username, extension, album = "general") {
@@ -243,29 +389,6 @@ async function buildSignedViewUrl(key) {
   }
 }
 
-function hashPassword(password, salt = crypto.randomBytes(16).toString("hex")) {
-  const safePassword = typeof password === "string" ? password : "";
-  const hash = crypto.scryptSync(safePassword, salt, 64).toString("hex");
-  return { salt, hash };
-}
-
-function safeCompareHex(left, right) {
-  try {
-    const leftBuffer = Buffer.from(left, "hex");
-    const rightBuffer = Buffer.from(right, "hex");
-    if (leftBuffer.length !== rightBuffer.length) return false;
-    return crypto.timingSafeEqual(leftBuffer, rightBuffer);
-  } catch {
-    return false;
-  }
-}
-
-function verifyPassword(password, salt, expectedHash) {
-  if (typeof salt !== "string" || typeof expectedHash !== "string") return false;
-  const { hash } = hashPassword(password, salt);
-  return safeCompareHex(hash, expectedHash);
-}
-
 function extractUsername(req) {
   const headerUsername = req.headers["x-username"];
   if (typeof headerUsername === "string" && headerUsername.length > 0) {
@@ -293,47 +416,6 @@ function extractUsername(req) {
   if (typeof req.body?.name === "string") {
     return normalizeUsername(req.body.name);
   }
-  return "";
-}
-
-function extractPassword(req) {
-  const headerPassword = req.headers["x-password"];
-  if (typeof headerPassword === "string" && headerPassword.length > 0) {
-    return headerPassword;
-  }
-  if (Array.isArray(headerPassword) && typeof headerPassword[0] === "string" && headerPassword[0].length > 0) {
-    return headerPassword[0];
-  }
-
-  const headerPasscode = req.headers["x-passcode"];
-  if (typeof headerPasscode === "string" && headerPasscode.length > 0) {
-    return headerPasscode;
-  }
-  if (Array.isArray(headerPasscode) && typeof headerPasscode[0] === "string" && headerPasscode[0].length > 0) {
-    return headerPasscode[0];
-  }
-
-  if (typeof req.body?.password === "string") {
-    return req.body.password;
-  }
-  if (typeof req.body?.passcode === "string") {
-    return req.body.passcode;
-  }
-
-  if (typeof req.body === "string") {
-    const textBody = req.body;
-    if (!textBody) return "";
-
-    try {
-      const parsed = JSON.parse(textBody);
-      if (typeof parsed?.password === "string") return parsed.password;
-      if (typeof parsed?.passcode === "string") return parsed.passcode;
-    } catch {
-      // Ignore parse errors and use raw body.
-    }
-
-    return textBody;
-  }
 
   return "";
 }
@@ -352,40 +434,40 @@ function extractAlbum(req) {
   return "general";
 }
 
-function extractIsPublic(req, defaultValue = false) {
-  const headerIsPublic = req.headers["x-is-public"];
-  if (typeof headerIsPublic === "string") {
-    return parseBooleanFlag(headerIsPublic, defaultValue);
-  }
-  if (Array.isArray(headerIsPublic) && typeof headerIsPublic[0] === "string") {
-    return parseBooleanFlag(headerIsPublic[0], defaultValue);
-  }
-  if (req.body && Object.hasOwn(req.body, "isPublic")) {
-    return parseBooleanFlag(req.body.isPublic, defaultValue);
-  }
-  return defaultValue;
-}
-
-function buildPhotoEntry({ user, key, contentType, sizeBytes, width, height, capturedAt, publicUrl, album, isPublic }) {
+function buildPhotoEntry({
+  user,
+  key,
+  contentType,
+  sizeBytes,
+  width,
+  height,
+  durationSeconds,
+  capturedAt,
+  publicUrl,
+  album
+}) {
   const normalizedAlbum = normalizeAlbum(album);
-  const isPublicPhoto = parseBooleanFlag(
-    isPublic,
-    typeof publicUrl === "string" && publicUrl.length > 0
-  );
+  const resolvedPublicUrl =
+    typeof publicUrl === "string" && publicUrl.length > 0 ? publicUrl : buildPublicUrl(key);
+  const normalizedContentType =
+    typeof contentType === "string" && contentType.length > 0 ? contentType : "application/octet-stream";
+  const mediaType = mediaTypeFromContentType(normalizedContentType);
 
   return {
     id: randomId("photo_"),
     userId: user.id,
     ownerUsername: user.username,
     key,
-    contentType: typeof contentType === "string" ? contentType : "application/octet-stream",
+    contentType: normalizedContentType,
+    mediaType,
     sizeBytes: typeof sizeBytes === "number" ? sizeBytes : null,
     width: typeof width === "number" ? width : null,
     height: typeof height === "number" ? height : null,
+    durationSeconds: typeof durationSeconds === "number" && Number.isFinite(durationSeconds) ? durationSeconds : null,
     capturedAt: typeof capturedAt === "string" ? capturedAt : new Date().toISOString(),
-    publicUrl: isPublicPhoto && typeof publicUrl === "string" ? publicUrl : null,
+    publicUrl: resolvedPublicUrl,
     album: normalizedAlbum,
-    isPublic: isPublicPhoto,
+    isPublic: Boolean(resolvedPublicUrl),
     uploaderName: user.username,
     createdAt: new Date().toISOString()
   };
@@ -394,60 +476,61 @@ function buildPhotoEntry({ user, key, contentType, sizeBytes, width, height, cap
 function normalizeStoredPhotoEntry(entry) {
   if (!entry || typeof entry !== "object") return null;
 
-  const userId = typeof entry.userId === "string" ? entry.userId : "";
-  const ownerUsername = normalizeUsername(entry.ownerUsername || entry.uploaderName || "");
-  const publicUrl = typeof entry.publicUrl === "string" ? entry.publicUrl : null;
+  const ownerUsername =
+    normalizeUsername(entry.ownerUsername || entry.uploaderName || DEFAULT_UPLOADER_NAME) || DEFAULT_UPLOADER_NAME;
+  const publicUrl =
+    typeof entry.publicUrl === "string" && entry.publicUrl.trim().length > 0 ? entry.publicUrl : null;
+  const userId =
+    typeof entry.userId === "string" && entry.userId.trim().length > 0
+      ? entry.userId.trim()
+      : contributorIdForUsername(ownerUsername);
 
   return {
     ...entry,
     userId,
     ownerUsername,
+    mediaType: mediaTypeFromContentType(entry.contentType),
     album: normalizeAlbum(entry.album),
     isPublic: parseBooleanFlag(entry.isPublic, Boolean(publicUrl)),
-    publicUrl
+    publicUrl,
+    durationSeconds:
+      typeof entry.durationSeconds === "number" && Number.isFinite(entry.durationSeconds)
+        ? entry.durationSeconds
+        : null,
+    uploaderName: ownerUsername
   };
 }
 
-function normalizeUserRecord(record) {
+function normalizeContributorRecord(record) {
   if (!record || typeof record !== "object") return null;
 
-  const id = typeof record.id === "string" ? record.id.trim() : "";
   const username = normalizeUsername(record.username);
-  const passwordHash = typeof record.passwordHash === "string" ? record.passwordHash : "";
-  const passwordSalt = typeof record.passwordSalt === "string" ? record.passwordSalt : "";
+  if (!username || !isValidUsername(username)) return null;
 
-  if (!id || !username || !passwordHash || !passwordSalt) return null;
+  const id = typeof record.id === "string" && record.id.trim().length > 0 ? record.id.trim() : contributorIdForUsername(username);
+  const now = new Date().toISOString();
 
   return {
     id,
     username,
-    passwordHash,
-    passwordSalt,
-    role: normalizeRole(record.role),
-    active: parseBooleanFlag(record.active, true),
-    linkedUserIds: Array.isArray(record.linkedUserIds)
-      ? Array.from(
-          new Set(
-            record.linkedUserIds
-              .filter((value) => typeof value === "string")
-              .map((value) => value.trim())
-              .filter(Boolean)
-          )
-        )
-      : [],
-    createdAt: typeof record.createdAt === "string" ? record.createdAt : new Date().toISOString(),
-    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : new Date().toISOString()
+    createdAt: typeof record.createdAt === "string" ? record.createdAt : now,
+    updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now
   };
 }
 
-function normalizeUserStore(store) {
-  const sourceUsers = Array.isArray(store?.users) ? store.users : [];
+function normalizeContributorStore(store) {
+  const sourceUsers = Array.isArray(store?.users)
+    ? store.users
+    : Array.isArray(store?.profiles)
+      ? store.profiles
+      : [];
+
   const users = [];
   const seenIds = new Set();
   const seenUsernames = new Set();
 
   sourceUsers.forEach((rawUser) => {
-    const user = normalizeUserRecord(rawUser);
+    const user = normalizeContributorRecord(rawUser);
     if (!user) return;
     if (seenIds.has(user.id) || seenUsernames.has(user.username)) return;
 
@@ -456,247 +539,26 @@ function normalizeUserStore(store) {
     users.push(user);
   });
 
-  const validIds = new Set(users.map((user) => user.id));
-  users.forEach((user) => {
-    user.linkedUserIds = user.linkedUserIds.filter((id) => id !== user.id && validIds.has(id));
-  });
-
-  const byId = new Map(users.map((user) => [user.id, user]));
-  users.forEach((user) => {
-    user.linkedUserIds.forEach((linkedId) => {
-      const other = byId.get(linkedId);
-      if (!other) return;
-      if (!other.linkedUserIds.includes(user.id)) {
-        other.linkedUserIds.push(user.id);
-      }
-    });
-  });
-
-  users.forEach((user) => {
-    user.linkedUserIds = Array.from(new Set(user.linkedUserIds)).filter((id) => id !== user.id);
-  });
-
   return {
-    version: 1,
-    users
+    version: 2,
+    users: users.sort((a, b) => a.username.localeCompare(b.username))
   };
 }
 
-function createUserRecord({ username, password, role = "user", active = true }) {
-  const normalizedUsername = normalizeUsername(username);
+function createContributorRecord(username) {
+  const normalizedUsername = normalizeUsername(username) || DEFAULT_UPLOADER_NAME;
   if (!isValidUsername(normalizedUsername)) {
     throw new Error(
-      "Invalid username. Use 1-40 chars with letters, numbers, spaces, dot, underscore, dash, @, or +."
+      "Invalid name. Use 1-40 chars with letters, numbers, spaces, dot, underscore, dash, @, or +."
     );
   }
 
-  if (typeof password !== "string" || password.length < 4) {
-    throw new Error("Password must be at least 4 characters.");
-  }
-
-  const { salt, hash } = hashPassword(password);
   const now = new Date().toISOString();
-
   return {
-    id: randomId("user_"),
+    id: contributorIdForUsername(normalizedUsername),
     username: normalizedUsername,
-    passwordHash: hash,
-    passwordSalt: salt,
-    role: normalizeRole(role),
-    active: parseBooleanFlag(active, true),
-    linkedUserIds: [],
     createdAt: now,
     updatedAt: now
-  };
-}
-
-function serializeUserForSession(user) {
-  return {
-    id: user.id,
-    username: user.username,
-    role: user.role,
-    active: user.active
-  };
-}
-
-function serializeUsersForAdmin(users) {
-  const byId = new Map(users.map((user) => [user.id, user]));
-  return users
-    .slice()
-    .sort((a, b) => a.username.localeCompare(b.username))
-    .map((user) => ({
-      id: user.id,
-      username: user.username,
-      role: user.role,
-      active: user.active,
-      linkedUserIds: user.linkedUserIds.slice().sort((a, b) => a.localeCompare(b)),
-      linkedUsernames: user.linkedUserIds
-        .map((id) => byId.get(id)?.username)
-        .filter(Boolean)
-        .sort((a, b) => a.localeCompare(b)),
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt
-    }));
-}
-
-function computeVisibleUsers(user, allUsers) {
-  const activeUsers = allUsers.filter((candidate) => candidate.active);
-  if (user.role === "admin") {
-    return activeUsers
-      .map((candidate) => ({ id: candidate.id, username: candidate.username }))
-      .sort((a, b) => a.username.localeCompare(b.username));
-  }
-
-  const allowedIds = new Set([user.id, ...user.linkedUserIds]);
-  return activeUsers
-    .filter((candidate) => allowedIds.has(candidate.id))
-    .map((candidate) => ({ id: candidate.id, username: candidate.username }))
-    .sort((a, b) => a.username.localeCompare(b.username));
-}
-
-function resolveLinkedUserIds(input, users) {
-  const values = Array.isArray(input)
-    ? input
-    : typeof input === "string"
-      ? input.split(",")
-      : [];
-
-  const byId = new Map(users.map((user) => [user.id, user.id]));
-  const byUsername = new Map(users.map((user) => [user.username, user.id]));
-  const resolved = new Set();
-
-  values.forEach((value) => {
-    if (typeof value !== "string") return;
-
-    const trimmed = value.trim();
-    if (!trimmed) return;
-
-    if (byId.has(trimmed)) {
-      resolved.add(trimmed);
-      return;
-    }
-
-    const normalizedUsername = normalizeUsername(trimmed);
-    if (byUsername.has(normalizedUsername)) {
-      resolved.add(byUsername.get(normalizedUsername));
-    }
-  });
-
-  return Array.from(resolved);
-}
-
-function applyBidirectionalLinks(users, userId, requestedLinkedIds) {
-  const byId = new Map(users.map((user) => [user.id, user]));
-  const user = byId.get(userId);
-  if (!user) return;
-
-  const validLinkedIds = Array.from(
-    new Set(requestedLinkedIds.filter((id) => id !== userId && byId.has(id)))
-  );
-
-  users.forEach((candidate) => {
-    candidate.linkedUserIds = candidate.linkedUserIds.filter((id) => id !== userId);
-  });
-
-  user.linkedUserIds = validLinkedIds;
-
-  validLinkedIds.forEach((linkedId) => {
-    const other = byId.get(linkedId);
-    if (!other) return;
-    if (!other.linkedUserIds.includes(userId)) {
-      other.linkedUserIds.push(userId);
-    }
-  });
-}
-
-function countActiveAdmins(users, ignoreUserId = "", nextRole = "", nextActive = null) {
-  return users.filter((user) => {
-    const role = user.id === ignoreUserId && nextRole ? nextRole : user.role;
-    const active = user.id === ignoreUserId && typeof nextActive === "boolean" ? nextActive : user.active;
-    return role === "admin" && active;
-  }).length;
-}
-
-function bootstrapUserIdForUsername(username) {
-  const normalized = normalizeUsername(username) || "user";
-  const digest = crypto
-    .createHash("sha256")
-    .update(`bootstrap-user:${normalized}`)
-    .digest("hex")
-    .slice(0, 20);
-  return `user_bootstrap_${digest}`;
-}
-
-function configuredPasswordForBootstrapUsername(username) {
-  const normalized = normalizeUsername(username);
-  const envKeysByUsername = {
-    admin: ["ADMIN_PASSWORD", "APP_PASSCODE", "DEFAULT_USER_PASSWORD"],
-    m: ["USER_PASSWORD_M", "DEFAULT_USER_PASSWORD", "APP_PASSCODE", "ADMIN_PASSWORD"],
-    v: ["USER_PASSWORD_V", "DEFAULT_USER_PASSWORD", "APP_PASSCODE", "ADMIN_PASSWORD"],
-    boys: ["USER_PASSWORD_BOYS", "DEFAULT_USER_PASSWORD", "APP_PASSCODE", "ADMIN_PASSWORD"]
-  };
-  const envKeys = envKeysByUsername[normalized] ?? ["DEFAULT_USER_PASSWORD", "APP_PASSCODE", "ADMIN_PASSWORD"];
-  for (const key of envKeys) {
-    const value = process.env[key];
-    if (typeof value === "string" && value.length >= 4) {
-      return value;
-    }
-  }
-  return "";
-}
-
-function buildBootstrapUser(username, role) {
-  const normalizedUsername = normalizeUsername(username);
-  if (!isValidUsername(normalizedUsername)) return null;
-
-  const password = configuredPasswordForBootstrapUsername(normalizedUsername);
-  if (!password) return null;
-
-  try {
-    const user = createUserRecord({
-      username: normalizedUsername,
-      password,
-      role,
-      active: true
-    });
-    user.id = bootstrapUserIdForUsername(normalizedUsername);
-    return user;
-  } catch (error) {
-    console.error(`Could not bootstrap user ${normalizedUsername}:`, error);
-    return null;
-  }
-}
-
-function ensurePreconfiguredUsers(store) {
-  const normalizedStore = normalizeUserStore(store);
-  const byUsername = new Map(normalizedStore.users.map((user) => [user.username, user]));
-  const preconfigured = [
-    buildBootstrapUser("m", "user"),
-    buildBootstrapUser("v", "user"),
-    buildBootstrapUser("admin", "admin"),
-    buildBootstrapUser("boys", "user")
-  ].filter(Boolean);
-  let changed = false;
-
-  preconfigured.forEach((user) => {
-    if (!byUsername.has(user.username)) {
-      normalizedStore.users.push(user);
-      byUsername.set(user.username, user);
-      changed = true;
-    }
-  });
-
-  const adminUser = byUsername.get("admin");
-  if (adminUser && (adminUser.role !== "admin" || !adminUser.active)) {
-    adminUser.role = "admin";
-    adminUser.active = true;
-    adminUser.updatedAt = new Date().toISOString();
-    changed = true;
-  }
-
-  return {
-    changed,
-    store: normalizeUserStore(normalizedStore)
   };
 }
 
@@ -719,16 +581,16 @@ async function writeJsonToFile(pathname, value) {
   await fs.writeFile(pathname, JSON.stringify(value, null, 2), "utf8");
 }
 
-async function readUsersFromFile() {
-  const parsed = await readJsonFromFile(usersPath, { version: 1, users: [] });
-  return normalizeUserStore(parsed);
+async function readContributorsFromFile() {
+  const parsed = await readJsonFromFile(usersPath, { version: 2, users: [] });
+  return normalizeContributorStore(parsed);
 }
 
-async function writeUsersToFile(store) {
-  await writeJsonToFile(usersPath, normalizeUserStore(store));
+async function writeContributorsToFile(store) {
+  await writeJsonToFile(usersPath, normalizeContributorStore(store));
 }
 
-async function readUsersFromS3() {
+async function readContributorsFromS3() {
   try {
     const response = await s3.send(
       new GetObjectCommand({
@@ -738,80 +600,73 @@ async function readUsersFromS3() {
     );
 
     const body = await response.Body?.transformToString?.();
-    if (!body) return { version: 1, users: [] };
+    if (!body) return { version: 2, users: [] };
 
-    return normalizeUserStore(JSON.parse(body));
+    return normalizeContributorStore(JSON.parse(body));
   } catch (error) {
     if (error?.name === "NoSuchKey" || error?.$metadata?.httpStatusCode === 404) {
-      return { version: 1, users: [] };
+      return { version: 2, users: [] };
     }
     throw error;
   }
 }
 
-async function writeUsersToS3(store) {
+async function writeContributorsToS3(store) {
   await s3.send(
     new PutObjectCommand({
       Bucket: process.env.S3_BUCKET,
       Key: usersIndexKey(),
-      Body: JSON.stringify(normalizeUserStore(store)),
+      Body: JSON.stringify(normalizeContributorStore(store)),
       ContentType: "application/json"
     })
   );
 }
 
-async function readUserStore() {
+async function readContributorStore() {
   if (metadataBackend === "s3") {
-    return readUsersFromS3();
+    return readContributorsFromS3();
   }
 
   try {
-    return await readUsersFromFile();
+    return await readContributorsFromFile();
   } catch (error) {
     if (["EROFS", "EACCES", "EPERM"].includes(error?.code) && canUseS3()) {
-      return readUsersFromS3();
+      return readContributorsFromS3();
     }
     throw error;
   }
 }
 
-async function writeUserStore(store) {
+async function writeContributorStore(store) {
   if (metadataBackend === "s3") {
-    await writeUsersToS3(store);
+    await writeContributorsToS3(store);
     return { backend: "s3" };
   }
 
   try {
-    await writeUsersToFile(store);
+    await writeContributorsToFile(store);
     return { backend: "file" };
   } catch (error) {
     if (["EROFS", "EACCES", "EPERM"].includes(error?.code) && canUseS3()) {
-      await writeUsersToS3(store);
+      await writeContributorsToS3(store);
       return { backend: "s3-fallback" };
     }
     throw error;
   }
 }
 
-let bootstrapPromise = null;
+async function ensureContributor(usernameInput) {
+  const normalizedUsername = normalizeUsername(usernameInput);
+  const username =
+    normalizedUsername && isValidUsername(normalizedUsername) ? normalizedUsername : DEFAULT_UPLOADER_NAME;
+  const store = await readContributorStore();
+  const existing = store.users.find((user) => user.username === username);
+  if (existing) return existing;
 
-async function ensureUserStoreBootstrapped() {
-  if (bootstrapPromise) return bootstrapPromise;
-
-  bootstrapPromise = (async () => {
-    const store = await readUserStore();
-    const preconfiguredResult = ensurePreconfiguredUsers(store);
-    if (!preconfiguredResult.changed) return preconfiguredResult.store;
-
-    await writeUserStore(preconfiguredResult.store);
-    return preconfiguredResult.store;
-  })();
-
-  try {
-    return await bootstrapPromise;
-  } finally {
-    bootstrapPromise = null;
-  }
+  const contributor = createContributorRecord(username);
+  store.users.push(contributor);
+  await writeContributorStore(store);
+  return contributor;
 }
 
 async function appendMetadataToFile(entry) {
@@ -893,296 +748,100 @@ async function appendPhotoMetadata(entry) {
   }
 }
 
-async function readMetadataForUser(userId) {
+async function readSharedMetadata() {
   if (metadataBackend === "s3") {
-    return readMetadataFromS3(userId);
+    const store = await readContributorStore();
+    const entriesByUser = await Promise.all(
+      store.users.map(async (user) => {
+        const records = await readMetadataFromS3(user.id);
+        return records
+          .map((record) =>
+            normalizeStoredPhotoEntry({
+              ...record,
+              userId:
+                typeof record?.userId === "string" && record.userId.trim().length > 0
+                  ? record.userId
+                  : user.id,
+              ownerUsername: record?.ownerUsername || record?.uploaderName || user.username
+            })
+          )
+          .filter(Boolean);
+      })
+    );
+
+    return entriesByUser.flat();
   }
 
-  const all = await readAllMetadataFromFile();
-  return all.filter((item) => item?.userId === userId);
-}
-
-async function auth(req, res, next) {
-  if (!requireEnvVars(res, ["TOKEN_SECRET"])) {
-    return;
-  }
-
-  if (metadataBackend === "s3" && !requireEnvVars(res, S3_REQUIRED_ENV)) {
-    return;
-  }
-
-  const authHeader = req.headers.authorization ?? "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-  const payload = verifyToken(token);
-
-  if (!payload) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
-  }
-
-  try {
-    await ensureUserStoreBootstrapped();
-    const store = await readUserStore();
-    let user = store.users.find((candidate) => candidate.id === payload.sub);
-    if (!user && typeof payload.un === "string" && payload.un.trim().length > 0) {
-      const tokenUsername = normalizeUsername(payload.un);
-      user = store.users.find((candidate) => candidate.username === tokenUsername);
-    }
-
-    if (!user || !user.active) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-
-    const visibleUsers = computeVisibleUsers(user, store.users);
-
-    req.user = {
-      ...user,
-      visibleUsers,
-      visibleUserIds: visibleUsers.map((candidate) => candidate.id)
-    };
-
-    next();
-  } catch (error) {
-    next(error);
-  }
-}
-
-function requireAdmin(req, res, next) {
-  if (req.user?.role !== "admin" || normalizeUsername(req.user?.username) !== "admin") {
-    res.status(403).json({ error: "Admin access required." });
-    return;
-  }
-  next();
+  return (await readAllMetadataFromFile()).map(normalizeStoredPhotoEntry).filter(Boolean);
 }
 
 app.get("/api/health", async (_req, res) => {
-  const missingAuthConfig = missingEnvVars(["TOKEN_SECRET"]);
-  if (!process.env.ADMIN_PASSWORD && !process.env.APP_PASSCODE) {
-    missingAuthConfig.push("ADMIN_PASSWORD (or APP_PASSCODE for bootstrap)");
-  }
-
-  let usersCount = 0;
+  let contributorsCount = 0;
   try {
-    const store = await readUserStore();
-    usersCount = store.users.length;
+    const store = await readContributorStore();
+    contributorsCount = store.users.length;
   } catch {
-    usersCount = 0;
+    contributorsCount = 0;
   }
 
   res.json({
     ok: true,
+    authEnabled: hasConfiguredPassword(),
+    authSessionHours,
     metadataBackend,
     metadataBackendRequested: metadataBackendRaw,
     metadataBackendForcedToS3: isServerlessRuntime && parsedMetadataBackend === "file",
     isServerlessRuntime,
     port,
-    usersCount,
-    missingAuthConfig,
+    contributorsCount,
+    defaultUploaderName: DEFAULT_UPLOADER_NAME,
     missingS3Config: missingEnvVars(S3_REQUIRED_ENV)
   });
 });
 
-app.post("/api/login", async (req, res, next) => {
-  try {
-    if (!requireEnvVars(res, ["TOKEN_SECRET"])) {
-      return;
-    }
-
-    if (metadataBackend === "s3" && !requireEnvVars(res, S3_REQUIRED_ENV)) {
-      return;
-    }
-
-    await ensureUserStoreBootstrapped();
-    const store = await readUserStore();
-    if (store.users.length === 0) {
-      res.status(503).json({
-        error: "No users configured. Set ADMIN_PASSWORD (or APP_PASSCODE) to bootstrap the first admin."
-      });
-      return;
-    }
-
-    const username = extractUsername(req);
-    if (!username) {
-      res.status(400).json({ error: "Username is required." });
-      return;
-    }
-
-    const password = extractPassword(req);
-    if (typeof password !== "string" || password.length === 0) {
-      res.status(400).json({ error: "Password is required." });
-      return;
-    }
-
-    const user = store.users.find((candidate) => candidate.username === username);
-    if (!user || !user.active || !verifyPassword(password, user.passwordSalt, user.passwordHash)) {
-      res.status(401).json({ error: "Invalid username or password." });
-      return;
-    }
-
-    const token = createToken(user);
-    const visibleUsers = computeVisibleUsers(user, store.users);
-
-    res.json({
-      token,
-      expiresInSeconds: tokenTtlSeconds,
-      user: serializeUserForSession(user),
-      visibleUsers
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.get("/api/login", (_req, res) => {
-  res.status(405).json({ error: "Use POST /api/login with username and password in the request body." });
-});
-
-app.get("/api/me", auth, (req, res) => {
+app.get("/api/session", (req, res) => {
+  setNoStore(res);
   res.json({
-    user: serializeUserForSession(req.user),
-    visibleUsers: req.user.visibleUsers
+    authenticated: isAuthenticatedRequest(req),
+    authEnabled: hasConfiguredPassword(),
+    authSessionHours
   });
 });
 
-app.get("/api/admin/users", auth, requireAdmin, async (_req, res, next) => {
-  try {
-    const store = await readUserStore();
-    res.json({
-      users: serializeUsersForAdmin(store.users)
-    });
-  } catch (error) {
-    next(error);
+app.post("/api/unlock", (req, res) => {
+  setNoStore(res);
+  if (!requireConfiguredPassword(res)) {
+    return;
   }
+
+  const password = typeof req.body?.password === "string" ? req.body.password : "";
+  if (!password) {
+    res.status(400).json({ error: "Password is required." });
+    return;
+  }
+
+  if (!passwordMatches(password)) {
+    clearAuthCookie(req, res);
+    res.status(401).json({ error: "Incorrect password." });
+    return;
+  }
+
+  res.setHeader("Set-Cookie", serializeCookie(authCookieName, createAuthToken(), req));
+  res.json({
+    authenticated: true,
+    expiresInSeconds: authSessionSeconds
+  });
 });
 
-app.post("/api/admin/users", auth, requireAdmin, async (req, res, next) => {
-  try {
-    const username = normalizeUsername(req.body?.username);
-    const password = typeof req.body?.password === "string" ? req.body.password : "";
-    const role = normalizeRole(req.body?.role);
-
-    if (!isValidUsername(username)) {
-      res.status(400).json({
-        error: "Invalid username. Use 1-40 chars with letters, numbers, spaces, dot, underscore, dash, @, or +."
-      });
-      return;
-    }
-
-    if (password.length < 4) {
-      res.status(400).json({ error: "Password must be at least 4 characters." });
-      return;
-    }
-
-    const store = await readUserStore();
-    if (store.users.some((candidate) => candidate.username === username)) {
-      res.status(409).json({ error: "That username already exists." });
-      return;
-    }
-
-    const user = createUserRecord({ username, password, role, active: true });
-    store.users.push(user);
-
-    const hasLinkedInput =
-      Object.hasOwn(req.body ?? {}, "linkedUsers") || Object.hasOwn(req.body ?? {}, "linkedUserIds");
-    if (hasLinkedInput) {
-      const requestedLinked = resolveLinkedUserIds(
-        req.body?.linkedUsers ?? req.body?.linkedUserIds,
-        store.users
-      );
-      applyBidirectionalLinks(store.users, user.id, requestedLinked);
-    }
-
-    await writeUserStore(store);
-
-    res.status(201).json({
-      user: serializeUserForSession(user),
-      users: serializeUsersForAdmin(store.users)
-    });
-  } catch (error) {
-    next(error);
-  }
+app.post("/api/logout", (req, res) => {
+  setNoStore(res);
+  clearAuthCookie(req, res);
+  res.json({ authenticated: false });
 });
 
-app.patch("/api/admin/users/:userId", auth, requireAdmin, async (req, res, next) => {
-  try {
-    const userId = String(req.params.userId ?? "");
-    if (!userId) {
-      res.status(400).json({ error: "userId is required." });
-      return;
-    }
+app.use(["/api/upload-url", "/api/upload", "/api/photos"], requireAuthenticatedApp);
 
-    const store = await readUserStore();
-    const user = store.users.find((candidate) => candidate.id === userId);
-    if (!user) {
-      res.status(404).json({ error: "User not found." });
-      return;
-    }
-
-    const hasRole = Object.hasOwn(req.body ?? {}, "role");
-    const nextRole = hasRole ? normalizeRole(req.body.role) : user.role;
-
-    const hasActive = Object.hasOwn(req.body ?? {}, "active");
-    const nextActive = hasActive ? parseBooleanFlag(req.body.active, user.active) : user.active;
-
-    if (req.user.id === user.id && !nextActive) {
-      res.status(400).json({ error: "You cannot deactivate your own account." });
-      return;
-    }
-
-    const activeAdmins = countActiveAdmins(store.users, user.id, nextRole, nextActive);
-    if (activeAdmins < 1) {
-      res.status(400).json({ error: "At least one active admin is required." });
-      return;
-    }
-
-    user.role = nextRole;
-    user.active = nextActive;
-
-    const incomingPassword = typeof req.body?.password === "string" ? req.body.password : "";
-    if (incomingPassword.length > 0) {
-      if (incomingPassword.length < 4) {
-        res.status(400).json({ error: "Password must be at least 4 characters." });
-        return;
-      }
-      const { salt, hash } = hashPassword(incomingPassword);
-      user.passwordSalt = salt;
-      user.passwordHash = hash;
-    }
-
-    const hasLinkedInput =
-      Object.hasOwn(req.body ?? {}, "linkedUsers") || Object.hasOwn(req.body ?? {}, "linkedUserIds");
-    if (hasLinkedInput) {
-      const requestedLinked = resolveLinkedUserIds(
-        req.body?.linkedUsers ?? req.body?.linkedUserIds,
-        store.users
-      );
-      applyBidirectionalLinks(store.users, user.id, requestedLinked);
-    }
-
-    const now = new Date().toISOString();
-    user.updatedAt = now;
-
-    if (hasLinkedInput) {
-      store.users.forEach((candidate) => {
-        if (candidate.linkedUserIds.includes(user.id) || candidate.id === user.id) {
-          candidate.updatedAt = now;
-        }
-      });
-    }
-
-    await writeUserStore(store);
-
-    res.json({
-      user: serializeUserForSession(user),
-      users: serializeUsersForAdmin(store.users)
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-app.post("/api/upload-url", auth, async (req, res, next) => {
+app.post("/api/upload-url", async (req, res, next) => {
   try {
     if (!requireEnvVars(res, S3_REQUIRED_ENV)) {
       return;
@@ -1191,6 +850,7 @@ app.post("/api/upload-url", auth, async (req, res, next) => {
     const { contentType, fileSize } = req.body ?? {};
     const headerContentType = req.headers["x-content-type"];
     const headerFileSize = req.headers["x-file-size"];
+    const contributor = await ensureContributor(extractUsername(req));
 
     const normalizedContentType = normalizeContentType(
       typeof contentType === "string" && contentType.length > 0 ? contentType : headerContentType
@@ -1219,14 +879,13 @@ app.post("/api/upload-url", auth, async (req, res, next) => {
     const extension = extensionFromType(normalizedContentType);
     if (!extension) {
       res.status(400).json({
-        error: "Unsupported contentType. Use JPEG, PNG, WEBP, HEIC, or HEIF."
+        error: "Unsupported contentType. Use JPEG, PNG, WEBP, HEIC, HEIF, MP4, MOV, M4V, or WEBM."
       });
       return;
     }
 
     const album = extractAlbum(req);
-    const isPublicPhoto = extractIsPublic(req, false);
-    const key = buildObjectKey(req.user.id, req.user.username, extension, album);
+    const key = buildObjectKey(contributor.id, contributor.username, extension, album);
 
     const command = new PutObjectCommand({
       Bucket: process.env.S3_BUCKET,
@@ -1235,7 +894,7 @@ app.post("/api/upload-url", auth, async (req, res, next) => {
     });
 
     const uploadUrl = await getSignedUrl(s3, command, { expiresIn: signedUrlSeconds });
-    const publicUrl = isPublicPhoto ? buildPublicUrl(key) : null;
+    const publicUrl = buildPublicUrl(key);
 
     res.json({
       key,
@@ -1243,22 +902,23 @@ app.post("/api/upload-url", auth, async (req, res, next) => {
       expiresInSeconds: signedUrlSeconds,
       publicUrl,
       album,
-      isPublic: isPublicPhoto,
-      ownerUsername: req.user.username
+      ownerUsername: contributor.username,
+      userId: contributor.id,
+      isPublic: Boolean(publicUrl)
     });
   } catch (error) {
     next(error);
   }
 });
 
-app.post("/api/upload", auth, rawUploadParser, async (req, res, next) => {
+app.post("/api/upload", rawUploadParser, async (req, res, next) => {
   try {
     if (!requireEnvVars(res, S3_REQUIRED_ENV)) {
       return;
     }
 
     if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
-      res.status(400).json({ error: "Image body is required." });
+      res.status(400).json({ error: "Media body is required." });
       return;
     }
 
@@ -1269,18 +929,18 @@ app.post("/api/upload", auth, rawUploadParser, async (req, res, next) => {
       return;
     }
 
+    const contributor = await ensureContributor(extractUsername(req));
     const contentType = normalizeContentType(req.headers["content-type"]);
     const extension = extensionFromType(contentType);
     if (!extension) {
       res.status(400).json({
-        error: "Unsupported contentType. Use JPEG, PNG, WEBP, HEIC, or HEIF."
+        error: "Unsupported contentType. Use JPEG, PNG, WEBP, HEIC, HEIF, MP4, MOV, M4V, or WEBM."
       });
       return;
     }
 
     const album = extractAlbum(req);
-    const isPublicPhoto = extractIsPublic(req, false);
-    const key = buildObjectKey(req.user.id, req.user.username, extension, album);
+    const key = buildObjectKey(contributor.id, contributor.username, extension, album);
 
     await s3.send(
       new PutObjectCommand({
@@ -1293,19 +953,20 @@ app.post("/api/upload", auth, rawUploadParser, async (req, res, next) => {
 
     const widthHeader = coercePositiveNumber(req.headers["x-image-width"]);
     const heightHeader = coercePositiveNumber(req.headers["x-image-height"]);
+    const durationHeader = coercePositiveNumber(req.headers["x-media-duration"]);
     const capturedAtHeader = req.headers["x-captured-at"];
 
     const entry = buildPhotoEntry({
-      user: req.user,
+      user: contributor,
       key,
       contentType,
       sizeBytes: req.body.length,
       width: widthHeader ? Math.round(widthHeader) : null,
       height: heightHeader ? Math.round(heightHeader) : null,
+      durationSeconds: durationHeader ? Number(durationHeader.toFixed(3)) : null,
       capturedAt: typeof capturedAtHeader === "string" ? capturedAtHeader : new Date().toISOString(),
       publicUrl: buildPublicUrl(key),
-      album,
-      isPublic: isPublicPhoto
+      album
     });
 
     let metadataStored = true;
@@ -1329,37 +990,38 @@ app.post("/api/upload", auth, rawUploadParser, async (req, res, next) => {
   }
 });
 
-app.post("/api/photos", auth, async (req, res, next) => {
+app.post("/api/photos", async (req, res, next) => {
   try {
     if (metadataBackend === "s3" && !requireEnvVars(res, S3_REQUIRED_ENV)) {
       return;
     }
 
-    const { key, contentType, sizeBytes, width, height, capturedAt, publicUrl } = req.body ?? {};
+    const contributor = await ensureContributor(extractUsername(req));
+    const { key, contentType, sizeBytes, width, height, durationSeconds, capturedAt, publicUrl } = req.body ?? {};
     const album = extractAlbum(req);
-    const isPublicPhoto = extractIsPublic(req, false);
 
     if (typeof key !== "string" || key.length === 0) {
       res.status(400).json({ error: "key is required." });
       return;
     }
 
-    if (!key.startsWith(`${req.user.id}/`)) {
-      res.status(403).json({ error: "Invalid key for current user." });
+    if (!key.startsWith(`${contributor.id}/`)) {
+      res.status(403).json({ error: "Invalid key for current uploader." });
       return;
     }
 
     const entry = buildPhotoEntry({
-      user: req.user,
+      user: contributor,
       key,
       contentType,
       sizeBytes,
       width,
       height,
+      durationSeconds:
+        typeof durationSeconds === "number" && Number.isFinite(durationSeconds) ? durationSeconds : null,
       capturedAt,
       publicUrl: typeof publicUrl === "string" && publicUrl.length > 0 ? publicUrl : buildPublicUrl(key),
-      album,
-      isPublic: isPublicPhoto
+      album
     });
 
     let metadataStored = true;
@@ -1383,7 +1045,7 @@ app.post("/api/photos", auth, async (req, res, next) => {
   }
 });
 
-app.get("/api/photos", auth, async (req, res, next) => {
+app.get("/api/photos", async (req, res, next) => {
   try {
     if (metadataBackend === "s3" && !requireEnvVars(res, S3_REQUIRED_ENV)) {
       return;
@@ -1391,9 +1053,7 @@ app.get("/api/photos", auth, async (req, res, next) => {
 
     const albumQuery = typeof req.query?.album === "string" ? req.query.album : "";
     const normalizedAlbumFilter = albumQuery.trim().length > 0 ? normalizeAlbum(albumQuery) : "";
-    const publicOnly = parseBooleanFlag(req.query?.publicOnly, false);
-
-    const ownerQuery = typeof req.query?.owner === "string" ? req.query.owner.trim() : "";
+    const uploaderQuery = typeof req.query?.uploader === "string" ? normalizeUsername(req.query.uploader) : "";
 
     const limitRequested = Number(req.query?.limit);
     const limit =
@@ -1401,76 +1061,32 @@ app.get("/api/photos", auth, async (req, res, next) => {
         ? Math.min(Math.floor(limitRequested), 300)
         : 120;
 
-    const visibleUsers = req.user.visibleUsers;
-    const visibleUserMap = new Map(visibleUsers.map((user) => [user.id, user.username]));
-
-    const entriesByUser = await Promise.all(
-      visibleUsers.map(async (visibleUser) => {
-        const records = await readMetadataForUser(visibleUser.id);
-        return records
-          .map((record) => {
-            const normalized = normalizeStoredPhotoEntry({
-              ...record,
-              userId:
-                typeof record?.userId === "string" && record.userId.length > 0
-                  ? record.userId
-                  : visibleUser.id,
-              ownerUsername: record?.ownerUsername || record?.uploaderName || visibleUser.username
-            });
-            if (!normalized) return null;
-            if (!normalized.userId) {
-              normalized.userId = visibleUser.id;
-            }
-            if (!normalized.ownerUsername) {
-              normalized.ownerUsername = visibleUser.username;
-            }
-            return normalized;
-          })
-          .filter(Boolean);
-      })
-    );
-
-    const allPhotos = entriesByUser
-      .flat()
-      .filter((entry) => visibleUserMap.has(entry.userId))
-      .sort((a, b) => {
-        const aTime = Date.parse(a?.createdAt ?? "") || 0;
-        const bTime = Date.parse(b?.createdAt ?? "") || 0;
-        return bTime - aTime;
-      });
-
-    const owners = Array.from(
-      new Map(
-        allPhotos.map((photo) => [
-          photo.userId,
-          {
-            id: photo.userId,
-            username: photo.ownerUsername || visibleUserMap.get(photo.userId) || "unknown"
-          }
-        ])
-      ).values()
-    ).sort((a, b) => a.username.localeCompare(b.username));
-
-    let ownerFilterId = "";
-    if (ownerQuery) {
-      if (visibleUserMap.has(ownerQuery)) {
-        ownerFilterId = ownerQuery;
-      } else {
-        const normalizedOwnerUsername = normalizeUsername(ownerQuery);
-        const found = owners.find((owner) => owner.username === normalizedOwnerUsername);
-        if (found) ownerFilterId = found.id;
-      }
-    }
+    const allPhotos = (await readSharedMetadata()).sort((a, b) => {
+      const aTime = Date.parse(a?.createdAt ?? "") || 0;
+      const bTime = Date.parse(b?.createdAt ?? "") || 0;
+      return bTime - aTime;
+    });
 
     const albums = Array.from(new Set(allPhotos.map((item) => item.album).filter(Boolean))).sort((a, b) =>
       a.localeCompare(b)
     );
 
+    const contributors = Array.from(
+      new Map(
+        allPhotos.map((photo) => [
+          photo.userId,
+          {
+            id: photo.userId,
+            username: photo.ownerUsername || DEFAULT_UPLOADER_NAME
+          }
+        ])
+      ).values()
+    ).sort((a, b) => a.username.localeCompare(b.username));
+
     const photos = allPhotos
       .filter((item) => {
         if (normalizedAlbumFilter && item.album !== normalizedAlbumFilter) return false;
-        if (publicOnly && !item.isPublic) return false;
-        if (ownerFilterId && item.userId !== ownerFilterId) return false;
+        if (uploaderQuery && item.ownerUsername !== uploaderQuery) return false;
         return true;
       })
       .slice(0, limit);
@@ -1485,11 +1101,10 @@ app.get("/api/photos", auth, async (req, res, next) => {
     res.json({
       photos: photosWithViewUrls,
       albums,
-      owners,
+      contributors,
       filters: {
         album: normalizedAlbumFilter || null,
-        publicOnly,
-        owner: ownerFilterId || null
+        uploader: uploaderQuery || null
       }
     });
   } catch (error) {

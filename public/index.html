@@ -8,99 +8,133 @@
   </head>
   <body>
     <main class="app">
-      <div class="app-shell">
-        <section class="panel">
-          <h1>Cloud Camera</h1>
-          <p class="subtitle">Capture and upload directly to cloud storage.</p>
+      <section id="auth-gate" class="auth-gate" aria-labelledby="unlock-title">
+        <div class="capture-panel auth-card">
+          <p class="eyebrow">Private camera</p>
+          <h1 id="unlock-title">Enter the shared password.</h1>
+          <p class="hero-copy">
+            The camera and gallery stay locked until someone with the shared password opens them.
+          </p>
 
-          <form id="login-form" class="login-form">
-            <label for="username">Username</label>
-            <input id="username" type="text" autocomplete="username" required maxlength="40" />
-            <label for="password">Password</label>
-            <input id="password" type="password" autocomplete="current-password" required />
-            <button type="submit">Sign In</button>
+          <form id="unlock-form" class="auth-form">
+            <div class="field-group">
+              <label for="unlock-password">Password</label>
+              <input
+                id="unlock-password"
+                type="password"
+                placeholder="Enter password"
+                autocomplete="current-password"
+              />
+            </div>
+
+            <div class="controls auth-controls">
+              <button id="unlock-button" type="submit">Unlock Camera</button>
+            </div>
+
+            <p id="unlock-status" class="status" aria-live="polite">Checking access...</p>
           </form>
+        </div>
+      </section>
 
-          <div class="session-row">
-            <span id="session-user">Not signed in</span>
-            <button id="logout-button" type="button" disabled>Log Out</button>
-          </div>
-
-          <div class="upload-options">
-            <label for="album-name">Album</label>
-            <input id="album-name" type="text" maxlength="50" value="general" />
-            <label class="check-row" for="public-toggle">
-              <input id="public-toggle" type="checkbox" />
-              <span>Make uploads public</span>
-            </label>
-          </div>
-
-          <div class="camera-wrap">
-            <video id="preview" playsinline autoplay muted></video>
-            <canvas id="capture-canvas" hidden></canvas>
-          </div>
-
-          <div class="controls">
-            <button id="capture" disabled>Take Photo</button>
-            <button id="flip-camera" disabled>Flip Camera</button>
-          </div>
-          <div class="controls">
-            <button id="upload-files" disabled>Upload From Device</button>
-            <input id="file-picker" type="file" accept="image/*" multiple hidden />
-          </div>
-
-          <p id="status">Locked. Sign in to start.</p>
-
-          <section id="admin-panel" class="admin-panel" hidden>
-            <h2 class="admin-title">Admin Panel</h2>
-            <p class="admin-subtitle">Create users and control shared album access.</p>
-
-            <form id="create-user-form" class="create-user-form">
-              <label for="new-user-username">New username</label>
-              <input id="new-user-username" type="text" maxlength="40" autocomplete="off" />
-              <label for="new-user-password">New user password</label>
-              <input id="new-user-password" type="password" maxlength="128" autocomplete="off" />
-              <label for="new-user-role">Role</label>
-              <select id="new-user-role">
-                <option value="user">User</option>
-                <option value="admin">Admin</option>
-              </select>
-              <button type="submit">Create User</button>
-            </form>
-
-            <p id="admin-status" class="admin-status"></p>
-            <div id="admin-users-list" class="admin-users-list"></div>
-          </section>
+      <div id="app-shell" hidden>
+        <section class="hero">
+          <p class="eyebrow">Shared camera</p>
+          <h1>Snap it. Upload it. Find it fast.</h1>
+          <p class="hero-copy">
+            The camera opens right away after unlock, uploads go into one shared gallery, and names are optional.
+          </p>
         </section>
 
-        <aside class="album-panel">
-          <h2 class="album-title">Album</h2>
-          <p class="album-subtitle">Browse uploaded photos by album.</p>
-          <div class="album-filters">
-            <label for="owner-filter">View User</label>
-            <select id="owner-filter">
-              <option value="">All visible users</option>
-            </select>
-            <label for="album-filter">View Album</label>
-            <select id="album-filter">
-              <option value="">All albums</option>
-            </select>
-            <label class="check-row" for="public-only-filter">
-              <input id="public-only-filter" type="checkbox" />
-              <span>Public only</span>
-            </label>
-          </div>
-          <div id="album-grid" class="album-grid"></div>
-        </aside>
+        <section class="workspace">
+          <section class="capture-panel">
+            <div class="field-group">
+              <label for="profile-name">Your name</label>
+              <input id="profile-name" type="text" maxlength="40" placeholder="camera" autocomplete="nickname" />
+            </div>
+
+            <div class="field-group">
+              <label for="album-name">Album</label>
+              <input id="album-name" type="text" maxlength="50" value="general" />
+            </div>
+
+            <p id="profile-hint" class="profile-hint"></p>
+
+            <div class="camera-wrap" id="camera-wrap">
+              <video id="preview" playsinline autoplay muted></video>
+              <div class="camera-overlay">
+                <div id="recording-pill" class="recording-pill" hidden>
+                  <span class="recording-dot"></span>
+                  <span id="recording-time">00:00</span>
+                </div>
+                <div id="focus-ring" class="focus-ring" hidden></div>
+                <div id="zoom-controls" class="camera-zoom" hidden>
+                  <button id="zoom-out" class="zoom-button" type="button" aria-label="Zoom out">
+                    -
+                  </button>
+                  <input
+                    id="zoom-slider"
+                    class="zoom-slider"
+                    type="range"
+                    min="1"
+                    max="1"
+                    step="0.1"
+                    value="1"
+                    aria-label="Camera zoom"
+                  />
+                  <button id="zoom-in" class="zoom-button" type="button" aria-label="Zoom in">
+                    +
+                  </button>
+                  <span id="zoom-value" class="zoom-value">1.0x</span>
+                </div>
+              </div>
+              <canvas id="capture-canvas" hidden></canvas>
+            </div>
+            <p id="camera-hint" class="camera-hint">
+              Tap the preview to refocus when your browser exposes camera controls.
+            </p>
+
+            <div class="controls">
+              <button id="capture" type="button">Take Photo</button>
+              <button id="record-video" type="button">Record Video</button>
+              <button id="flip-camera" type="button">Flip Camera</button>
+            </div>
+
+            <div class="controls controls-secondary">
+              <button id="upload-files" type="button">Upload From Device</button>
+              <button id="refresh-gallery" type="button">Refresh Gallery</button>
+              <input id="file-picker" type="file" accept="image/*,video/*" multiple hidden />
+            </div>
+
+            <p id="status" class="status" aria-live="polite">Starting camera...</p>
+          </section>
+
+          <aside class="gallery-panel">
+            <div class="gallery-head">
+              <p class="eyebrow">Recent uploads</p>
+              <h2>Shared gallery</h2>
+              <p class="gallery-copy">Everything lands here. Use albums to keep the scroll clean.</p>
+            </div>
+
+            <div class="gallery-filter">
+              <label for="album-filter">Album</label>
+              <select id="album-filter">
+                <option value="">All albums</option>
+              </select>
+            </div>
+
+            <div id="album-grid" class="album-grid"></div>
+          </aside>
+        </section>
       </div>
 
       <div id="preview-modal" class="preview-modal" hidden>
         <div class="preview-backdrop" id="preview-backdrop"></div>
-        <div class="preview-content" role="dialog" aria-modal="true" aria-label="Photo preview">
+        <div class="preview-content" role="dialog" aria-modal="true" aria-label="Media preview">
           <button id="preview-close" class="preview-close" type="button" aria-label="Close preview">
             Close
           </button>
-          <img id="preview-image" class="preview-image" alt="Photo preview" />
+          <img id="preview-image" class="preview-image" alt="Media preview" />
+          <video id="preview-video" class="preview-video" playsinline controls hidden></video>
         </div>
       </div>
     </main>

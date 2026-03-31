@@ -4,13 +4,24 @@
 
 [build.environment]
   # These are non-secret config values that can appear in source/docs.
-  # Keep real credentials (APP_PASSCODE, TOKEN_SECRET, S3_* keys) scanned.
+  # Keep real credentials (APP_PASSWORD, TOKEN_SECRET, S3_* keys) scanned.
   SECRETS_SCAN_OMIT_KEYS = "PORT,METADATA_BACKEND,METADATA_PREFIX,S3_REGION,S3_BUCKET"
 
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
   external_node_modules = ["express", "dotenv", "@aws-sdk/client-s3", "@aws-sdk/s3-request-presigner", "serverless-http"]
+
+[[redirects]]
+  from = "/camera"
+  to = "/camera/"
+  status = 301
+
+[[redirects]]
+  from = "/camera/"
+  to = "/index.html"
+  status = 200
+  force = true
 
 [[redirects]]
   from = "/api/*"
