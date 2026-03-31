@@ -653,6 +653,7 @@ video {
 .preview-image,
 .preview-player {
   width: 100%;
+  justify-self: center;
   max-height: calc(90vh - 84px);
   display: block;
   border-radius: 16px;
@@ -741,6 +742,27 @@ video {
     right: 12px;
     bottom: 12px;
     grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .preview-content {
+    width: min(88vw, 380px);
+    max-height: 78vh;
+    padding: 12px;
+    gap: 8px;
+  }
+
+  .preview-actions {
+    width: 100%;
+  }
+
+  .preview-image,
+  .preview-player {
+    width: min(100%, 320px);
+    max-height: min(46vh, 280px);
+  }
+
+  .preview-player video {
+    max-height: min(46vh, 280px);
   }
 
   .zoom-value {
