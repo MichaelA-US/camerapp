@@ -34,6 +34,7 @@ const albumFilterSelect = document.getElementById("album-filter");
 
 const previewModalEl = document.getElementById("preview-modal");
 const previewBackdropEl = document.getElementById("preview-backdrop");
+const previewDownloadEl = document.getElementById("preview-download");
 const previewCloseEl = document.getElementById("preview-close");
 const previewImageEl = document.getElementById("preview-image");
 const previewVideoEl = document.getElementById("preview-video");
@@ -83,6 +84,10 @@ let recentPinchAt = 0;
 const albumEntries = new Map();
 const albumOrder = [];
 const knownAlbums = new Set();
+const videoThumbnailJobs = new Map();
+
+let activePreview = null;
+let previewDownloadInFlight = false;
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
@@ -187,6 +192,170 @@ function mediaFormatLabel(item) {
   const key = typeof item?.key === "string" ? item.key : "";
   const extension = key.includes(".") ? key.split(".").pop() : "";
   return extension ? extension.toUpperCase() : item?.mediaType === "video" ? "VIDEO" : "IMAGE";
+}
+
+function fileNameFromKey(key, mediaType = "image") {
+  if (typeof key === "string" && key.trim()) {
+    const candidate = key.split("/").pop() || key;
+    return decodeURIComponent(candidate);
+  }
+
+  return mediaType === "video" ? "camera-video.mp4" : "camera-image.jpg";
+}
+
+function previewDownloadLabel(mediaType = "image") {
+  return mediaType === "video" ? "Download Video" : "Download Image";
+}
+
+function syncPreviewDownloadButton() {
+  if (!activePreview?.url) {
+    previewDownloadEl.hidden = true;
+    previewDownloadEl.disabled = false;
+    previewDownloadEl.textContent = "Download";
+    return;
+  }
+
+  previewDownloadEl.hidden = false;
+  previewDownloadEl.disabled = previewDownloadInFlight;
+  previewDownloadEl.textContent = previewDownloadInFlight
+    ? "Downloading..."
+    : previewDownloadLabel(activePreview.mediaType);
+}
+
+function triggerDownload(url, fileName) {
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+async function createVideoThumbnail(url) {
+  if (!url) return null;
+
+  return new Promise((resolve, reject) => {
+    const probe = document.createElement("video");
+    let settled = false;
+    let timeoutId = 0;
+
+    const finish = (resolver, value) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutId) window.clearTimeout(timeoutId);
+      probe.pause();
+      probe.removeAttribute("src");
+      probe.load();
+      resolver(value);
+    };
+
+    const captureFrame = () => {
+      const width = probe.videoWidth;
+      const height = probe.videoHeight;
+      if (!width || !height) {
+        finish(resolve, null);
+        return;
+      }
+
+      const maxEdge = 420;
+      const scale = Math.min(1, maxEdge / Math.max(width, height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
+      const context = canvas.getContext("2d");
+      if (!context) {
+        finish(resolve, null);
+        return;
+      }
+
+      context.drawImage(probe, 0, 0, canvas.width, canvas.height);
+      finish(resolve, canvas.toDataURL("image/jpeg", 0.82));
+    };
+
+    const cueCapture = () => {
+      const duration = Number.isFinite(probe.duration) && probe.duration > 0 ? probe.duration : 0;
+      if (duration > 0.4) {
+        const targetTime = Math.min(Math.max(duration * 0.18, 0.18), Math.max(duration - 0.12, 0.18));
+        const handleSeeked = () => {
+          probe.removeEventListener("seeked", handleSeeked);
+          captureFrame();
+        };
+        probe.addEventListener("seeked", handleSeeked);
+        try {
+          probe.currentTime = targetTime;
+          return;
+        } catch {
+          probe.removeEventListener("seeked", handleSeeked);
+        }
+      }
+
+      captureFrame();
+    };
+
+    probe.preload = "auto";
+    probe.muted = true;
+    probe.defaultMuted = true;
+    probe.playsInline = true;
+    if (/^https?:/i.test(url)) {
+      probe.crossOrigin = "anonymous";
+    }
+
+    probe.addEventListener("loadeddata", cueCapture, { once: true });
+    probe.addEventListener("error", () => {
+      finish(reject, new Error("Could not load video thumbnail."));
+    }, { once: true });
+
+    timeoutId = window.setTimeout(() => {
+      finish(reject, new Error("Timed out while creating video thumbnail."));
+    }, 12000);
+
+    probe.src = url;
+    probe.load();
+  });
+}
+
+function ensureVideoThumbnail(item) {
+  if (!item?.key || item.mediaType !== "video" || item.thumbnailUrl || videoThumbnailJobs.has(item.key)) {
+    return;
+  }
+
+  if (item.thumbnailAttemptedFor === item.displayUrl) {
+    return;
+  }
+
+  upsertAlbumEntry(
+    {
+      key: item.key,
+      thumbnailAttemptedFor: item.displayUrl
+    },
+    { promote: false, render: false }
+  );
+
+  const job = createVideoThumbnail(item.displayUrl)
+    .then((thumbnailUrl) => {
+      if (!thumbnailUrl) return;
+
+      const current = albumEntries.get(item.key);
+      if (!current || current.displayUrl !== item.displayUrl) return;
+
+      upsertAlbumEntry(
+        {
+          key: item.key,
+          thumbnailUrl,
+          thumbnailAttemptedFor: item.displayUrl
+        },
+        { promote: false, render: true }
+      );
+    })
+    .catch((error) => {
+      console.warn("Could not create video thumbnail:", error);
+    })
+    .finally(() => {
+      videoThumbnailJobs.delete(item.key);
+    });
+
+  videoThumbnailJobs.set(item.key, job);
 }
 
 function cameraLabel(facingMode) {
@@ -610,11 +779,20 @@ function renderAlbum() {
     card.type = "button";
     card.className = "album-item";
     card.addEventListener("click", () => {
-      openPhotoPreview(item.displayUrl, item.key, item.mediaType);
+      openPhotoPreview(item.displayUrl, item.key, item.mediaType, item.thumbnailUrl || "");
     });
 
     if (item.mediaType === "video") {
+      ensureVideoThumbnail(item);
       card.classList.add("album-item-video");
+
+      if (item.thumbnailUrl) {
+        const thumbnail = document.createElement("img");
+        thumbnail.src = item.thumbnailUrl;
+        thumbnail.alt = item.key || "Captured video";
+        thumbnail.className = "album-video-thumb";
+        card.appendChild(thumbnail);
+      }
 
       const surface = document.createElement("div");
       surface.className = "album-video-surface";
@@ -622,7 +800,7 @@ function renderAlbum() {
       const playGlyph = document.createElement("span");
       playGlyph.className = "album-video-play";
       playGlyph.setAttribute("aria-hidden", "true");
-      playGlyph.textContent = "Play";
+      playGlyph.textContent = "▶";
       surface.appendChild(playGlyph);
 
       const formatLabel = document.createElement("span");
@@ -671,19 +849,29 @@ function renderAlbum() {
   });
 }
 
-function openPhotoPreview(url, key = "Media preview", mediaType = "image") {
+function openPhotoPreview(url, key = "Media preview", mediaType = "image", thumbnailUrl = "") {
   if (!url) return;
+
+  activePreview = {
+    url,
+    key,
+    mediaType
+  };
+  previewDownloadInFlight = false;
+  syncPreviewDownloadButton();
 
   if (mediaType === "video") {
     previewImageEl.hidden = true;
     previewImageEl.removeAttribute("src");
     previewVideoEl.hidden = false;
+    previewVideoEl.poster = thumbnailUrl || "";
     previewVideoEl.src = url;
     previewVideoEl.setAttribute("aria-label", key);
     previewVideoEl.load();
   } else {
     previewVideoEl.pause();
     previewVideoEl.hidden = true;
+    previewVideoEl.removeAttribute("poster");
     previewVideoEl.removeAttribute("src");
     previewVideoEl.load();
     previewImageEl.hidden = false;
@@ -697,12 +885,46 @@ function openPhotoPreview(url, key = "Media preview", mediaType = "image") {
 function closePhotoPreview() {
   if (previewModalEl.hidden) return;
   previewModalEl.hidden = true;
+  activePreview = null;
+  previewDownloadInFlight = false;
+  syncPreviewDownloadButton();
   previewImageEl.removeAttribute("src");
   previewImageEl.hidden = true;
   previewVideoEl.pause();
   previewVideoEl.hidden = true;
+  previewVideoEl.removeAttribute("poster");
   previewVideoEl.removeAttribute("src");
   previewVideoEl.load();
+}
+
+async function downloadPreviewMedia() {
+  if (!activePreview?.url || previewDownloadInFlight) return;
+
+  const target = { ...activePreview };
+  const fileName = fileNameFromKey(target.key, target.mediaType);
+  previewDownloadInFlight = true;
+  syncPreviewDownloadButton();
+
+  try {
+    const response = await fetch(target.url);
+    if (!response.ok) {
+      throw new Error(`Download failed (${response.status}).`);
+    }
+
+    const blob = await response.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    triggerDownload(objectUrl, fileName);
+    window.setTimeout(() => {
+      URL.revokeObjectURL(objectUrl);
+    }, 1000);
+  } catch (error) {
+    console.error(error);
+    triggerDownload(target.url, fileName);
+    setStatus("Opened the file download directly because Safari could not fetch it first.");
+  } finally {
+    previewDownloadInFlight = false;
+    syncPreviewDownloadButton();
+  }
 }
 
 function setCameraControlsEnabled(enabled) {
@@ -1738,6 +1960,12 @@ albumInput.addEventListener("change", () => {
 albumFilterSelect.addEventListener("change", updateAlbumFilter);
 
 previewCloseEl.addEventListener("click", closePhotoPreview);
+previewDownloadEl.addEventListener("click", () => {
+  downloadPreviewMedia().catch((error) => {
+    console.error(error);
+    setStatus(error.message || "Could not download the file.", true);
+  });
+});
 previewBackdropEl.addEventListener("click", closePhotoPreview);
 previewImageEl.addEventListener("error", closePhotoPreview);
 unlockFormEl.addEventListener("submit", (event) => {
@@ -1760,6 +1988,7 @@ updateRecordingUi();
 recordVideoButton.hidden = !canRecordVideo();
 previewImageEl.hidden = true;
 previewVideoEl.hidden = true;
+syncPreviewDownloadButton();
 syncAlbumFilterOptions();
 renderAlbum();
 
