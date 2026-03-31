@@ -611,9 +611,20 @@ function renderAlbum() {
       const media = document.createElement("video");
       media.src = item.displayUrl;
       media.muted = true;
+      media.defaultMuted = true;
       media.playsInline = true;
-      media.preload = "metadata";
+      media.autoplay = true;
+      media.loop = true;
+      media.preload = "auto";
       media.disablePictureInPicture = true;
+      media.setAttribute("aria-label", item.key || "Captured video");
+      media.setAttribute("tabindex", "-1");
+      media.addEventListener("loadeddata", () => {
+        const playAttempt = media.play();
+        if (playAttempt && typeof playAttempt.catch === "function") {
+          playAttempt.catch(() => {});
+        }
+      });
       media.addEventListener("error", () => {
         removeAlbumEntry(item.key);
       });
