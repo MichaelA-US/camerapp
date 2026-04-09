@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "netlify:dev": "netlify dev"
+    "netlify:dev": "netlify dev",
+    "deploy": "wrangler deploy",
+    "preview": "wrangler dev"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -18,5 +20,8 @@
     "dotenv": "^17.0.0",
     "express": "^5.0.0",
     "serverless-http": "^3.2.0"
+  },
+  "devDependencies": {
+    "wrangler": "^4.79.0"
   }
 }
